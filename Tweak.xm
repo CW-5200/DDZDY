@@ -3,7 +3,6 @@
 #import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
 #import <MapKit/MapKit.h>
-#import <AudioToolbox/AudioToolbox.h>
 
 // MARK: - 插件的配置管理类
 @interface DDAssistantConfig : NSObject
@@ -12,10 +11,6 @@
 @property (assign, nonatomic) BOOL fakeLocationEnabled;
 @property (assign, nonatomic) double fakeLatitude;
 @property (assign, nonatomic) double fakeLongitude;
-
-@property (assign, nonatomic) BOOL customStepsEnabled;
-@property (assign, nonatomic) NSInteger customStepsCount;
-@property (strong, nonatomic) NSDate *lastStepsUpdateDate;
 @end
 
 @implementation DDAssistantConfig
@@ -24,9 +19,6 @@ static DDAssistantConfig *sharedInstance = nil;
 static NSString *const kFakeLocationEnabledKey = @"DDAssistantFakeLocationEnabled";
 static NSString *const kFakeLatitudeKey = @"DDAssistantFakeLatitude";
 static NSString *const kFakeLongitudeKey = @"DDAssistantFakeLongitude";
-static NSString *const kCustomStepsEnabledKey = @"DDAssistantCustomStepsEnabled";
-static NSString *const kCustomStepsCountKey = @"DDAssistantCustomStepsCount";
-static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDate";
 
 + (instancetype)sharedConfig {
     static dispatch_once_t onceToken;
@@ -53,20 +45,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
             [defaults setDouble:_fakeLongitude forKey:kFakeLongitudeKey];
         }
         
-        // 步数配置
-        _customStepsEnabled = [defaults boolForKey:kCustomStepsEnabledKey];
-        _customStepsCount = [defaults integerForKey:kCustomStepsCountKey];
-        if (_customStepsCount == 0) {
-            _customStepsCount = 8888;
-            [defaults setInteger:_customStepsCount forKey:kCustomStepsCountKey];
-        }
-        
-        NSDate *savedDate = [defaults objectForKey:kLastStepsUpdateDateKey];
-        _lastStepsUpdateDate = savedDate ?: [NSDate date];
-        if (!savedDate) {
-            [defaults setObject:_lastStepsUpdateDate forKey:kLastStepsUpdateDateKey];
-        }
-        
         [defaults synchronize];
     }
     return self;
@@ -91,53 +69,20 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
-- (void)setCustomStepsEnabled:(BOOL)customStepsEnabled {
-    _customStepsEnabled = customStepsEnabled;
-    [[NSUserDefaults standardUserDefaults] setBool:customStepsEnabled forKey:kCustomStepsEnabledKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-- (void)setCustomStepsCount:(NSInteger)customStepsCount {
-    _customStepsCount = customStepsCount;
-    [[NSUserDefaults standardUserDefaults] setInteger:customStepsCount forKey:kCustomStepsCountKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-- (void)setLastStepsUpdateDate:(NSDate *)lastStepsUpdateDate {
-    _lastStepsUpdateDate = lastStepsUpdateDate;
-    [[NSUserDefaults standardUserDefaults] setObject:lastStepsUpdateDate forKey:kLastStepsUpdateDateKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-#pragma mark - Helper Methods
-- (BOOL)isToday:(NSDate *)date {
-    if (!date) return NO;
-    
-    NSCalendar *calendar = [NSCalendar currentCalendar];
-    NSDateComponents *dateComponents = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date];
-    NSDateComponents *todayComponents = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:[NSDate date]];
-    
-    return (dateComponents.year == todayComponents.year &&
-            dateComponents.month == todayComponents.month &&
-            dateComponents.day == todayComponents.day);
-}
-
 @end
 
-// MARK: - 简化的CLLocationManager钩子（避免复杂定时器导致闪退）
+// MARK: - CLLocationManager钩子
 %hook CLLocationManager
 
 - (void)startUpdatingLocation {
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     
     if (config.fakeLocationEnabled) {
-        // 简单模式：只拦截，不启动定时器
         NSLog(@"[DD助手] 位置模拟已启用，拦截位置更新");
         
         // 立即发送一次模拟位置
-        [self performSelector:@selector(dda_sendFakeLocation) withObject:nil afterDelay:0.1];
+        [self performSelector:@selector(sendFakeLocation) withObject:nil afterDelay:0.1];
     } else {
-        // 如果没有启用模拟，使用原始方法
         %orig;
     }
 }
@@ -148,11 +93,10 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     if (!config.fakeLocationEnabled) {
         %orig;
     }
-    // 如果启用了模拟，什么都不做
 }
 
 // 发送模拟位置
-- (void)dda_sendFakeLocation {
+- (void)sendFakeLocation {
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     
     if (!config.fakeLocationEnabled) {
@@ -182,8 +126,8 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
             });
         }
         
-        // 设置下一次更新
-        [self performSelector:@selector(dda_sendFakeLocation) withObject:nil afterDelay:1.0];
+        // 设置下一次更新（每秒1次）
+        [self performSelector:@selector(sendFakeLocation) withObject:nil afterDelay:1.0];
     }
 }
 
@@ -207,22 +151,16 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 %end
 
-// MARK: - 简化的CLLocation钩子
+// MARK: - CLLocation钩子
 %hook CLLocation
 
 - (CLLocationCoordinate2D)coordinate {
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     
     if (config.fakeLocationEnabled) {
-        // 只修改我们自己创建的位置对象
-        // 避免修改系统内部的位置对象
-        static const double kFakeLat = 39.9035;
-        static const double kFakeLng = 116.3976;
-        
-        // 检查是否是系统关键位置对象
+        // 检查是否是系统位置对象
         NSString *className = NSStringFromClass([self class]);
-        if ([className isEqualToString:@"CLLocation"] || 
-            [className containsString:@"Location"]) {
+        if ([className isEqualToString:@"CLLocation"]) {
             return CLLocationCoordinate2DMake(config.fakeLatitude, config.fakeLongitude);
         }
     }
@@ -233,7 +171,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     
     if (config.fakeLocationEnabled) {
-        // 只在我们自己的情况下返回模拟精度
         return 5.0;
     }
     return %orig;
@@ -241,14 +178,60 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 %end
 
-// MARK: - 插件的设置界面（保持不变）
+// MARK: - 微信位置相关钩子
+%hook MMLocationMgr
+
+- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:config.fakeLatitude 
+                                                              longitude:config.fakeLongitude];
+        %orig(arg1, fakeLocation, arg3);
+    } else {
+        %orig(arg1, arg2, arg3);
+    }
+}
+
+- (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:config.fakeLatitude 
+                                                              longitude:config.fakeLongitude];
+        %orig(arg1, @[fakeLocation]);
+    } else {
+        %orig(arg1, arg2);
+    }
+}
+
+%end
+
+%hook WCLocationInfo
+
+- (double)latitude {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return config.fakeLatitude;
+    }
+    return %orig;
+}
+
+- (double)longitude {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return config.fakeLongitude;
+    }
+    return %orig;
+}
+
+%end
+
+// MARK: - 插件的设置界面
 @interface DDAssistantSettingsController : UIViewController <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) UITableView *tableView;
-@property (strong, nonatomic) NSArray *sectionTitles;
-@property (strong, nonatomic) NSArray *locationSectionRows;
-@property (strong, nonatomic) NSArray *stepsSectionRows;
-
-// 位置相关
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
 @property (strong, nonatomic) CLGeocoder *geocoder;
@@ -259,17 +242,11 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    self.title = @"DD助手设置";
+    self.title = @"位置设置";
     self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
     
     // 设置导航栏
     [self setupNavigationBar];
-    
-    // 初始化数据
-    self.sectionTitles = @[@"位置设置", @"步数设置"];
-    
-    // 初始化表格行数据
-    [self updateTableData];
     
     // 创建表格
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
@@ -309,43 +286,22 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     self.navigationItem.compactAppearance = appearance;
 }
 
-- (void)updateTableData {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    // 位置设置部分
-    NSMutableArray *locationRows = [NSMutableArray arrayWithObject:@"虚拟位置开关"];
-    if (config.fakeLocationEnabled) {
-        [locationRows addObject:@"地图选择位置"];
-    }
-    self.locationSectionRows = [locationRows copy];
-    
-    // 步数设置部分
-    NSMutableArray *stepsRows = [NSMutableArray arrayWithObject:@"自定义步数开关"];
-    if (config.customStepsEnabled) {
-        [stepsRows addObject:@"设置步数"];
-    }
-    self.stepsSectionRows = [stepsRows copy];
-}
-
 - (void)backButtonTapped {
     [self.navigationController popViewControllerAnimated:YES];
 }
 
 #pragma mark - UITableView DataSource & Delegate
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.sectionTitles.count;
+    return 1;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) {
-        return self.locationSectionRows.count;
-    } else {
-        return self.stepsSectionRows.count;
-    }
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    return config.fakeLocationEnabled ? 2 : 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return self.sectionTitles[section];
+    return @"位置设置";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -358,24 +314,7 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     
-    NSString *title = nil;
-    if (indexPath.section == 0) {
-        title = self.locationSectionRows[indexPath.row];
-    } else {
-        title = self.stepsSectionRows[indexPath.row];
-    }
-    
-    // 使用现代内容配置
-    UIListContentConfiguration *content = [UIListContentConfiguration valueCellConfiguration];
-    content.text = title;
-    content.textProperties.color = [UIColor labelColor];
-    content.secondaryTextProperties.color = [UIColor secondaryLabelColor];
-    cell.contentConfiguration = content;
-    
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.accessoryView = nil;
-    
-    if ([title isEqualToString:@"虚拟位置开关"]) {
+    if (indexPath.row == 0) {
         // 虚拟位置开关
         UISwitch *switchControl = [[UISwitch alloc] init];
         switchControl.onTintColor = [UIColor systemBlueColor];
@@ -384,56 +323,24 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
         cell.accessoryView = switchControl;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         
-        // 显示当前位置信息
-        UIListContentConfiguration *updatedContent = [UIListContentConfiguration valueCellConfiguration];
-        updatedContent.text = @"虚拟位置";
-        updatedContent.secondaryText = config.fakeLocationEnabled ? 
+        UIListContentConfiguration *content = [UIListContentConfiguration valueCellConfiguration];
+        content.text = @"虚拟位置";
+        content.secondaryText = config.fakeLocationEnabled ? 
             [NSString stringWithFormat:@"%.4f, %.4f", config.fakeLatitude, config.fakeLongitude] : 
             @"已关闭";
-        updatedContent.textProperties.color = [UIColor labelColor];
-        updatedContent.secondaryTextProperties.color = config.fakeLocationEnabled ? 
+        content.textProperties.color = [UIColor labelColor];
+        content.secondaryTextProperties.color = config.fakeLocationEnabled ? 
             [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
-        cell.contentConfiguration = updatedContent;
-        
-    } else if ([title isEqualToString:@"自定义步数开关"]) {
-        // 自定义步数开关
-        UISwitch *switchControl = [[UISwitch alloc] init];
-        switchControl.onTintColor = [UIColor systemBlueColor];
-        switchControl.on = config.customStepsEnabled;
-        [switchControl addTarget:self action:@selector(customStepsSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = switchControl;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        
-        // 显示当前步数信息
-        UIListContentConfiguration *updatedContent = [UIListContentConfiguration valueCellConfiguration];
-        updatedContent.text = @"自定义步数";
-        updatedContent.secondaryText = config.customStepsEnabled ? 
-            [NSString stringWithFormat:@"%ld步", (long)config.customStepsCount] : 
-            @"已关闭";
-        updatedContent.textProperties.color = [UIColor labelColor];
-        updatedContent.secondaryTextProperties.color = config.customStepsEnabled ? 
-            [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
-        cell.contentConfiguration = updatedContent;
-        
-    } else if ([title isEqualToString:@"地图选择位置"]) {
+        cell.contentConfiguration = content;
+    } else if (indexPath.row == 1) {
         // 地图选择位置
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        UIListContentConfiguration *mapContent = [UIListContentConfiguration subtitleCellConfiguration];
-        mapContent.text = @"地图选择位置";
-        mapContent.secondaryText = @"点击选择或搜索位置";
-        mapContent.textProperties.color = [UIColor labelColor];
-        mapContent.secondaryTextProperties.color = [UIColor secondaryLabelColor];
-        cell.contentConfiguration = mapContent;
-        
-    } else if ([title isEqualToString:@"设置步数"]) {
-        // 设置步数
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        UIListContentConfiguration *stepsContent = [UIListContentConfiguration subtitleCellConfiguration];
-        stepsContent.text = @"设置步数";
-        stepsContent.secondaryText = [NSString stringWithFormat:@"当前：%ld步", (long)config.customStepsCount];
-        stepsContent.textProperties.color = [UIColor labelColor];
-        stepsContent.secondaryTextProperties.color = [UIColor secondaryLabelColor];
-        cell.contentConfiguration = stepsContent;
+        UIListContentConfiguration *content = [UIListContentConfiguration subtitleCellConfiguration];
+        content.text = @"地图选择位置";
+        content.secondaryText = @"点击选择或搜索位置";
+        content.textProperties.color = [UIColor labelColor];
+        content.secondaryTextProperties.color = [UIColor secondaryLabelColor];
+        cell.contentConfiguration = content;
     }
     
     return cell;
@@ -442,38 +349,25 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSString *title = nil;
-    if (indexPath.section == 0) {
-        title = self.locationSectionRows[indexPath.row];
-    } else {
-        title = self.stepsSectionRows[indexPath.row];
-    }
-    
-    if ([title isEqualToString:@"地图选择位置"]) {
+    if (indexPath.row == 1) {
         [self showMapSelectionView];
-    } else if ([title isEqualToString:@"设置步数"]) {
-        [self showStepsSettingAlert];
     }
 }
 
-#pragma mark - Switch Handlers
+#pragma mark - Switch Handler
 - (void)fakeLocationSwitchChanged:(UISwitch *)sender {
     DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
     config.fakeLocationEnabled = sender.on;
     
-    // 更新表格数据并重新加载
-    [self updateTableData];
-    
-    // 使用动画更新表格
+    // 更新表格
     [self.tableView beginUpdates];
     
-    // 如果开关被打开，插入地图选择位置行
     if (sender.on) {
+        // 插入地图选择位置行
         NSIndexPath *indexPath = [NSIndexPath indexPathForRow:1 inSection:0];
         [self.tableView insertRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationTop];
-    } 
-    // 如果开关被关闭，移除地图选择位置行
-    else {
+    } else {
+        // 移除地图选择位置行
         NSIndexPath *indexPath = [NSIndexPath indexPathForRow:1 inSection:0];
         [self.tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationTop];
     }
@@ -483,77 +377,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     [self.tableView reloadRowsAtIndexPaths:@[switchIndexPath] withRowAnimation:UITableViewRowAnimationNone];
     
     [self.tableView endUpdates];
-}
-
-- (void)customStepsSwitchChanged:(UISwitch *)sender {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    config.customStepsEnabled = sender.on;
-    
-    // 更新表格数据并重新加载
-    [self updateTableData];
-    
-    // 使用动画更新表格
-    [self.tableView beginUpdates];
-    
-    // 如果开关被打开，插入设置步数行
-    if (sender.on) {
-        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:1 inSection:1];
-        [self.tableView insertRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationTop];
-    } 
-    // 如果开关被关闭，移除设置步数行
-    else {
-        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:1 inSection:1];
-        [self.tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationTop];
-    }
-    
-    // 更新开关所在行
-    NSIndexPath *switchIndexPath = [NSIndexPath indexPathForRow:0 inSection:1];
-    [self.tableView reloadRowsAtIndexPaths:@[switchIndexPath] withRowAnimation:UITableViewRowAnimationNone];
-    
-    [self.tableView endUpdates];
-}
-
-#pragma mark - Steps Setting
-- (void)showStepsSettingAlert {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设置步数" 
-                                                                   message:@"请输入自定义步数（0-100000）" 
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"步数";
-        textField.keyboardType = UIKeyboardTypeNumberPad;
-        textField.text = [NSString stringWithFormat:@"%ld", (long)config.customStepsCount];
-        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消" 
-                                                           style:UIAlertActionStyleCancel 
-                                                         handler:nil];
-    
-    UIAlertAction *confirmAction = [UIAlertAction actionWithTitle:@"确定" 
-                                                            style:UIAlertActionStyleDefault 
-                                                          handler:^(UIAlertAction *action) {
-        UITextField *stepsField = alert.textFields[0];
-        NSInteger steps = [stepsField.text integerValue];
-        
-        if (steps >= 0 && steps <= 100000) {
-            config.customStepsCount = steps;
-            config.lastStepsUpdateDate = [NSDate date];
-            
-            // 更新表格
-            [self updateTableData];
-            [self.tableView reloadData];
-        } else {
-            [self showAlertWithTitle:@"错误" message:@"请输入0-100000之间的步数"];
-        }
-    }];
-    
-    [alert addAction:cancelAction];
-    [alert addAction:confirmAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Map Selection
@@ -576,14 +399,14 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     navController.navigationBar.standardAppearance = appearance;
     navController.navigationBar.scrollEdgeAppearance = appearance;
     
-    // 将X图标改为"取消"文字按钮
+    // 取消按钮
     UIBarButtonItem *cancelButton = [[UIBarButtonItem alloc] initWithTitle:@"取消"
                                                                      style:UIBarButtonItemStylePlain
                                                                     target:self
                                                                     action:@selector(closeMapSelection)];
     mapVC.navigationItem.leftBarButtonItem = cancelButton;
     
-    // 添加确认按钮
+    // 确认按钮
     UIBarButtonItem *confirmButton = [[UIBarButtonItem alloc] initWithTitle:@"确认"
                                                                       style:UIBarButtonItemStyleDone
                                                                      target:self
@@ -598,7 +421,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
         [UISheetPresentationControllerDetent largeDetent]
     ];
     navController.sheetPresentationController.prefersGrabberVisible = YES;
-    navController.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
     
     [self presentViewController:navController animated:YES completion:nil];
     
@@ -609,34 +431,15 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
     self.mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
-    
-    // 添加圆角效果
     self.mapView.layer.cornerRadius = 12;
     self.mapView.layer.masksToBounds = YES;
-    self.mapView.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self.mapView.layer.shadowOffset = CGSizeMake(0, 2);
-    self.mapView.layer.shadowRadius = 8;
-    self.mapView.layer.shadowOpacity = 0.15;
-    
-    [mapVC.view addSubview:self.mapView];
-    
-    // 创建搜索容器
-    UIView *searchContainer = [[UIView alloc] init];
-    searchContainer.backgroundColor = [UIColor clearColor];
-    
-    // 添加模糊效果
-    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-    UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
-    blurView.layer.cornerRadius = 12;
-    blurView.layer.masksToBounds = YES;
     
     // 创建搜索栏
     self.searchBar = [[UISearchBar alloc] init];
     self.searchBar.delegate = self;
     self.searchBar.placeholder = @"搜索地点或输入坐标";
     self.searchBar.searchBarStyle = UISearchBarStyleDefault;
-    self.searchBar.barTintColor = [UIColor clearColor];
-    self.searchBar.backgroundImage = [[UIImage alloc] init]; // 移除背景
+    self.searchBar.backgroundImage = [[UIImage alloc] init];
     
     // 设置搜索文本框样式
     UITextField *searchTextField = self.searchBar.searchTextField;
@@ -645,47 +448,31 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     searchTextField.layer.masksToBounds = YES;
     searchTextField.clearButtonMode = UITextFieldViewModeWhileEditing;
     
-    [blurView.contentView addSubview:self.searchBar];
-    [searchContainer addSubview:blurView];
-    [mapVC.view addSubview:searchContainer];
-    
-    // 添加提示标签
+    // 提示标签
     UILabel *hintLabel = [[UILabel alloc] init];
     hintLabel.text = @"长按地图选择位置";
     hintLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     hintLabel.textAlignment = NSTextAlignmentCenter;
     hintLabel.textColor = [UIColor secondaryLabelColor];
-    hintLabel.backgroundColor = [UIColor clearColor];
+    
+    [mapVC.view addSubview:self.searchBar];
+    [mapVC.view addSubview:self.mapView];
     [mapVC.view addSubview:hintLabel];
     
-    // 使用AutoLayout
-    searchContainer.translatesAutoresizingMaskIntoConstraints = NO;
-    blurView.translatesAutoresizingMaskIntoConstraints = NO;
+    // AutoLayout
     self.searchBar.translatesAutoresizingMaskIntoConstraints = NO;
     self.mapView.translatesAutoresizingMaskIntoConstraints = NO;
     hintLabel.translatesAutoresizingMaskIntoConstraints = NO;
     
     [NSLayoutConstraint activateConstraints:@[
-        // 搜索容器
-        [searchContainer.topAnchor constraintEqualToAnchor:mapVC.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [searchContainer.leadingAnchor constraintEqualToAnchor:mapVC.view.leadingAnchor constant:16],
-        [searchContainer.trailingAnchor constraintEqualToAnchor:mapVC.view.trailingAnchor constant:-16],
-        [searchContainer.heightAnchor constraintEqualToConstant:52],
-        
-        // 模糊视图
-        [blurView.leadingAnchor constraintEqualToAnchor:searchContainer.leadingAnchor],
-        [blurView.trailingAnchor constraintEqualToAnchor:searchContainer.trailingAnchor],
-        [blurView.topAnchor constraintEqualToAnchor:searchContainer.topAnchor],
-        [blurView.bottomAnchor constraintEqualToAnchor:searchContainer.bottomAnchor],
-        
         // 搜索栏
-        [self.searchBar.leadingAnchor constraintEqualToAnchor:blurView.leadingAnchor],
-        [self.searchBar.trailingAnchor constraintEqualToAnchor:blurView.trailingAnchor],
-        [self.searchBar.topAnchor constraintEqualToAnchor:blurView.topAnchor],
-        [self.searchBar.bottomAnchor constraintEqualToAnchor:blurView.bottomAnchor],
+        [self.searchBar.topAnchor constraintEqualToAnchor:mapVC.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [self.searchBar.leadingAnchor constraintEqualToAnchor:mapVC.view.leadingAnchor constant:16],
+        [self.searchBar.trailingAnchor constraintEqualToAnchor:mapVC.view.trailingAnchor constant:-16],
+        [self.searchBar.heightAnchor constraintEqualToConstant:44],
         
         // 地图
-        [self.mapView.topAnchor constraintEqualToAnchor:searchContainer.bottomAnchor constant:16],
+        [self.mapView.topAnchor constraintEqualToAnchor:self.searchBar.bottomAnchor constant:16],
         [self.mapView.leadingAnchor constraintEqualToAnchor:mapVC.view.leadingAnchor constant:16],
         [self.mapView.trailingAnchor constraintEqualToAnchor:mapVC.view.trailingAnchor constant:-16],
         [self.mapView.bottomAnchor constraintEqualToAnchor:hintLabel.topAnchor constant:-12],
@@ -721,18 +508,12 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 - (void)handleMapLongPress:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state == UIGestureRecognizerStateBegan) {
-        // 震动反馈
-        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-        [feedback impactOccurred];
-        
         // 清除之前的选择标注
-        NSMutableArray *annotationsToRemove = [NSMutableArray array];
         for (id<MKAnnotation> annotation in self.mapView.annotations) {
             if ([annotation.title isEqualToString:@"选择的位置"]) {
-                [annotationsToRemove addObject:annotation];
+                [self.mapView removeAnnotation:annotation];
             }
         }
-        [self.mapView removeAnnotations:annotationsToRemove];
         
         // 获取点击位置
         CGPoint touchPoint = [gesture locationInView:self.mapView];
@@ -807,84 +588,10 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
         config.fakeLatitude = coordinate.latitude;
         config.fakeLongitude = coordinate.longitude;
         
-        // 震动反馈确认
-        UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
-        [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
-        
         [self dismissViewControllerAnimated:YES completion:^{
             // 更新表格
-            [self updateTableData];
             [self.tableView reloadData];
-            [self showAlertWithTitle:@"成功" message:@"位置已更新"];
         }];
-    } else {
-        [self showAlertInPresentedVCWithTitle:@"提示" message:@"请先在地图上选择一个位置"];
-    }
-}
-
-#pragma mark - Helper Methods
-- (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title 
-                                                                   message:message 
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)showAlertInPresentedVCWithTitle:(NSString *)title message:(NSString *)message {
-    UIViewController *presentedVC = self.presentedViewController ?: self;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title 
-                                                                   message:message 
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-    [presentedVC presentViewController:alert animated:YES completion:nil];
-}
-
-#pragma mark - MKMapViewDelegate
-- (MKAnnotationView *)mapView:(MKMapView *)mapView viewForAnnotation:(id<MKAnnotation>)annotation {
-    if ([annotation isKindOfClass:[MKUserLocation class]]) return nil;
-    
-    static NSString *annotationId = @"customAnnotation";
-    MKMarkerAnnotationView *markerView = (MKMarkerAnnotationView *)[mapView dequeueReusableAnnotationViewWithIdentifier:annotationId];
-    
-    if (!markerView) {
-        markerView = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:annotationId];
-        markerView.canShowCallout = YES;
-        markerView.animatesWhenAdded = YES;
-        markerView.glyphTintColor = [UIColor whiteColor];
-        
-        // 添加详情按钮
-        UIButton *detailButton = [UIButton buttonWithType:UIButtonTypeDetailDisclosure];
-        markerView.rightCalloutAccessoryView = detailButton;
-        
-        // 添加阴影
-        markerView.layer.shadowColor = [[UIColor blackColor] CGColor];
-        markerView.layer.shadowOffset = CGSizeMake(0, 2);
-        markerView.layer.shadowRadius = 4;
-        markerView.layer.shadowOpacity = 0.3;
-    } else {
-        markerView.annotation = annotation;
-    }
-    
-    // 根据标注类型设置样式
-    if ([annotation.title isEqualToString:@"当前位置"]) {
-        markerView.markerTintColor = [UIColor systemGreenColor];
-        markerView.glyphImage = [UIImage systemImageNamed:@"mappin.circle.fill"];
-    } else if ([annotation.title isEqualToString:@"选择的位置"]) {
-        markerView.markerTintColor = [UIColor systemBlueColor];
-        markerView.glyphImage = [UIImage systemImageNamed:@"mappin"];
-    }
-    
-    return markerView;
-}
-
-- (void)mapView:(MKMapView *)mapView annotationView:(MKAnnotationView *)view calloutAccessoryControlTapped:(UIControl *)control {
-    if ([view.annotation isKindOfClass:[MKPointAnnotation class]]) {
-        MKPointAnnotation *annotation = (MKPointAnnotation *)view.annotation;
-        self.searchBar.text = [NSString stringWithFormat:@"%.4f, %.4f", 
-                              annotation.coordinate.latitude, 
-                              annotation.coordinate.longitude];
-        [self.searchBar becomeFirstResponder];
     }
 }
 
@@ -913,11 +620,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
     
     // 地理编码搜索
     [self.geocoder geocodeAddressString:searchText completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
-        if (error) {
-            [self showAlertInPresentedVCWithTitle:@"搜索失败" message:@"未找到该地点，请尝试输入坐标格式：纬度,经度"];
-            return;
-        }
-        
         if (placemarks.count > 0) {
             CLPlacemark *placemark = placemarks.firstObject;
             [self addSelectedAnnotationAtCoordinate:placemark.location.coordinate withSubtitle:[self formatPlacemarkAddress:placemark]];
@@ -927,13 +629,11 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 - (void)addSelectedAnnotationAtCoordinate:(CLLocationCoordinate2D)coordinate withSubtitle:(NSString *)subtitle {
     // 清除之前的选择标注
-    NSMutableArray *annotationsToRemove = [NSMutableArray array];
     for (id<MKAnnotation> annotation in self.mapView.annotations) {
         if ([annotation.title isEqualToString:@"选择的位置"]) {
-            [annotationsToRemove addObject:annotation];
+            [self.mapView removeAnnotation:annotation];
         }
     }
-    [self.mapView removeAnnotations:annotationsToRemove];
     
     // 添加新的标注
     MKPointAnnotation *annotation = [[MKPointAnnotation alloc] init];
@@ -952,110 +652,10 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 @end
 
-// MARK: - Hook 实现
-
-%hook MMLocationMgr
-
-- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.fakeLocationEnabled) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:config.fakeLatitude 
-                                                              longitude:config.fakeLongitude];
-        %orig(arg1, fakeLocation, arg3);
-    } else {
-        %orig(arg1, arg2, arg3);
-    }
-}
-
-- (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.fakeLocationEnabled) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:config.fakeLatitude 
-                                                              longitude:config.fakeLongitude];
-        %orig(arg1, @[fakeLocation]);
-    } else {
-        %orig(arg1, arg2);
-    }
-}
-
-%end
-
-%hook WCDeviceStepObject
-
-- (unsigned int)m7StepCount {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.customStepsEnabled) {
-        if (![config isToday:config.lastStepsUpdateDate]) {
-            config.lastStepsUpdateDate = [NSDate date];
-        }
-        return (unsigned int)config.customStepsCount;
-    }
-    
-    return %orig;
-}
-
-- (unsigned int)hkStepCount {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.customStepsEnabled) {
-        if (![config isToday:config.lastStepsUpdateDate]) {
-            config.lastStepsUpdateDate = [NSDate date];
-        }
-        return (unsigned int)config.customStepsCount;
-    }
-    
-    return %orig;
-}
-
-%end
-
-%hook WCDataItem
-
-- (unsigned int)stepCount {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.customStepsEnabled) {
-        return (unsigned int)config.customStepsCount;
-    }
-    
-    return %orig;
-}
-
-%end
-
-%hook WCLocationInfo
-
-- (double)latitude {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.fakeLocationEnabled) {
-        return config.fakeLatitude;
-    }
-    
-    return %orig;
-}
-
-- (double)longitude {
-    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
-    
-    if (config.fakeLocationEnabled) {
-        return config.fakeLongitude;
-    }
-    
-    return %orig;
-}
-
-%end
-
 // MARK: - 插件注册
-
 @interface WCPluginsMgr : NSObject
 + (instancetype)sharedInstance;
 - (void)registerControllerWithTitle:(NSString *)title version:(NSString *)version controller:(NSString *)controller;
-- (void)registerSwitchWithTitle:(NSString *)title key:(NSString *)key;
 @end
 
 %hook MicroMessengerAppDelegate
@@ -1069,11 +669,11 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
             id pluginsMgr = [pluginsMgrClass sharedInstance];
             
             if (pluginsMgr && [pluginsMgr respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
-                [pluginsMgr registerControllerWithTitle:@"DD助手" 
+                [pluginsMgr registerControllerWithTitle:@"位置助手" 
                                                version:@"1.0.0" 
                                             controller:@"DDAssistantSettingsController"];
                 
-                NSLog(@"[DD助手] 插件注册成功 - 版本 1.0.0");
+                NSLog(@"[位置助手] 插件注册成功");
             }
         }
     });
@@ -1083,15 +683,6 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 
 %end
 
-%hook NewSettingViewController
-
-- (void)reloadTableData {
-    %orig;
-    NSLog(@"[DD助手] 设置页面已重新加载");
-}
-
-%end
-
 %ctor {
-    NSLog(@"[DD助手] 插件已加载 - DD Assistant v1.0.0");
+    NSLog(@"[位置助手] 插件已加载");
 }
