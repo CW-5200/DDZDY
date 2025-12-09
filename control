@@ -1,9 +1,9 @@
-Package: com.dd.ddassistant
-Name: DD助手
+Package: com.dd.ddgps
+Name: DDGPS
 Version: 1.0.0
 Architecture: iphoneos-arm
-Description: 微信DD助手插件 - 自定义位置和步数
-Maintainer: DD助手团队
-Author: DD助手开发组
+Description: 微信DDGPS插件 - 自定义位置
+Maintainer: DD
+Author: DD
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), com.tencent.xin (>= 8.0)
+Depends: mobilesubstrate (>= 0.9.5000)
