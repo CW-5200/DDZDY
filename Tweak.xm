@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
 #import <MapKit/MapKit.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 // MARK: - 插件的配置管理类
 @interface DDAssistantConfig : NSObject
@@ -122,6 +123,249 @@ static NSString *const kLastStepsUpdateDateKey = @"DDAssistantLastStepsUpdateDat
 }
 
 @end
+
+// MARK: - CLLocationManager 钩子扩展 (从 Tweak.x 中移植)
+
+%hook CLLocationManager
+
+// 伪造位置的方法实现
+%new
+- (void)sendFakeLocationUpdate {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        // 创建一个准确的CLLocation对象
+        CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(config.fakeLatitude, config.fakeLongitude);
+        
+        if (CLLocationCoordinate2DIsValid(coordinate)) {
+            double accuracy = 5.0; // 默认精度
+            double altitude = 0.0;
+            double speed = 0.0;
+            double course = 0.0;
+            
+            NSDate *timestamp = [NSDate date];
+            
+            // 创建完整的CLLocation对象，确保所有属性都有值
+            CLLocation *fakeLocation = [[CLLocation alloc] 
+                initWithCoordinate:coordinate
+                altitude:altitude
+                horizontalAccuracy:accuracy
+                verticalAccuracy:accuracy
+                course:course
+                speed:speed
+                timestamp:timestamp];
+            
+            // 确保代理方法存在后再调用
+            if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
+                });
+            }
+            
+            // 确保回调块也被调用 - 使用更兼容的方式
+            if (@available(iOS 14.0, *)) {
+                SEL handlerSelector = NSSelectorFromString(@"locationUpdateHandler");
+                if ([self respondsToSelector:handlerSelector]) {
+                    id handler = [self valueForKey:@"locationUpdateHandler"];
+                    if (handler && [handler isKindOfClass:NSClassFromString(@"NSBlock")]) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            // 使用performSelector调用block
+                            typedef void (^LocationUpdateHandlerBlock)(CLLocationManager *, NSArray *, NSError *);
+                            LocationUpdateHandlerBlock block = handler;
+                            block(self, @[fakeLocation], nil);
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+- (void)startUpdatingLocation {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        // 拦截标准方法，启动自己的模拟器
+        NSLog(@"[DD助手] 拦截并替换位置更新 - 使用模拟位置");
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(sendFakeLocationUpdate) object:nil];
+        [self performSelector:@selector(sendFakeLocationUpdate) withObject:nil afterDelay:0.1];
+        
+        // 设置定时器持续发送虚拟位置
+        static dispatch_source_t timer;
+        if (timer) {
+            dispatch_source_cancel(timer);
+            timer = nil;
+        }
+        
+        timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(timer, 
+                                 dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), 
+                                 0.5 * NSEC_PER_SEC,  // 每0.5秒更新一次
+                                 0.1 * NSEC_PER_SEC);
+        
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            [weakSelf sendFakeLocationUpdate];
+        });
+        
+        dispatch_resume(timer);
+        
+        // 保存定时器引用
+        objc_setAssociatedObject(self, "fakeLocationTimer", timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        // 如果没有启用模拟，使用原始方法
+        %orig;
+    }
+}
+
+- (void)stopUpdatingLocation {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (!config.fakeLocationEnabled) {
+        %orig;
+    } else {
+        // 停止定时器
+        dispatch_source_t timer = objc_getAssociatedObject(self, "fakeLocationTimer");
+        if (timer) {
+            dispatch_source_cancel(timer);
+            objc_setAssociatedObject(self, "fakeLocationTimer", nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+// 模拟方向数据
+- (void)startUpdatingHeading {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (!config.fakeLocationEnabled) {
+        %orig;
+    } else {
+        if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateHeading:)]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // 添加轻微随机偏差，增加真实感
+                double heading = 0.0;
+                double headingJitter = ((double)arc4random() / UINT32_MAX - 0.5) * 2.0;
+                heading += headingJitter;
+                
+                // 确保在0-360度范围内
+                heading = fmod(heading + 360.0, 360.0);
+                
+                // 创建虚假的CLHeading对象
+                CLHeading *fakeHeading = [[CLHeading alloc] init];
+                
+                // 使用KVC设置私有属性
+                [fakeHeading setValue:@(heading) forKey:@"magneticHeading"];
+                [fakeHeading setValue:@(heading) forKey:@"trueHeading"];
+                [fakeHeading setValue:@(3.0 + ((double)arc4random() / UINT32_MAX) * 2.0) forKey:@"headingAccuracy"];
+                [fakeHeading setValue:[NSDate date] forKey:@"timestamp"];
+                
+                [self.delegate locationManager:self didUpdateHeading:fakeHeading];
+            });
+        }
+    }
+}
+
+// 模拟授权状态
+- (BOOL)locationServicesEnabled {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return YES;
+    }
+    return %orig;
+}
+
+- (CLAuthorizationStatus)authorizationStatus {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return kCLAuthorizationStatusAuthorizedWhenInUse;
+    }
+    return %orig;
+}
+
+- (CLAuthorizationStatus)_authorizationStatus {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return kCLAuthorizationStatusAuthorizedWhenInUse;
+    }
+    return %orig;
+}
+
+%end
+
+// MARK: - CLLocation 钩子扩展 (从 Tweak.x 中移植)
+
+%hook CLLocation
+
+- (CLLocationCoordinate2D)coordinate {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        double latitude = config.fakeLatitude;
+        double longitude = config.fakeLongitude;
+        
+        return CLLocationCoordinate2DMake(latitude, longitude);
+    }
+    return %orig;
+}
+
+- (CLLocationAccuracy)horizontalAccuracy {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        double baseAccuracy = 5.0;
+        double jitter = ((double)arc4random() / UINT32_MAX) * 2.0;
+        return baseAccuracy + jitter;
+    }
+    return %orig;
+}
+
+- (CLLocationDistance)altitude {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        double altitude = 0.0;
+        // 添加微小随机变化
+        double jitter = ((double)arc4random() / UINT32_MAX - 0.5) * 0.5;
+        return altitude + jitter;
+    }
+    return %orig;
+}
+
+- (CLLocationAccuracy)verticalAccuracy {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        return 3.0 + ((double)arc4random() / UINT32_MAX) * 1.5;
+    }
+    return %orig;
+}
+
+- (CLLocationSpeed)speed {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        double speed = 0.0;
+        // 添加轻微抖动
+        double jitter = ((double)arc4random() / UINT32_MAX - 0.5) * 0.2 * speed;
+        return fmax(0, speed + jitter); // 保证速度不为负
+    }
+    return %orig;
+}
+
+- (CLLocationDirection)course {
+    DDAssistantConfig *config = [DDAssistantConfig sharedConfig];
+    
+    if (config.fakeLocationEnabled) {
+        double course = 0.0;
+        return course;
+    }
+    return %orig;
+}
+
+%end
 
 // MARK: - 插件的设置界面
 @interface DDAssistantSettingsController : UIViewController <UITableViewDelegate, UITableViewDataSource, UISearchBarDelegate, MKMapViewDelegate>
