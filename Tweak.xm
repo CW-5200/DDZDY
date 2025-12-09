@@ -555,16 +555,36 @@ static void loadLocationSettings() {
 
 @end
 
+// MARK: - 辅助函数
+static NSDate *getLocationTimestamp(id locationObject) {
+    if ([locationObject respondsToSelector:@selector(timestamp)]) {
+        return [locationObject performSelector:@selector(timestamp)];
+    }
+    return [NSDate date];
+}
+
+static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
+    double latitude = getFakeLatitude();
+    double longitude = getFakeLongitude();
+    
+    if ([originalLocation isKindOfClass:[CLLocation class]]) {
+        CLLocation *orig = (CLLocation *)originalLocation;
+        return [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(latitude, longitude)
+                                            altitude:orig.altitude
+                                  horizontalAccuracy:orig.horizontalAccuracy
+                                    verticalAccuracy:orig.verticalAccuracy
+                                           timestamp:orig.timestamp];
+    } else {
+        return [[CLLocation alloc] initWithLatitude:latitude longitude:longitude];
+    }
+}
+
 // MARK: - Hook实现
 %hook MMLocationMgr
 
 - (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
     if (isFakeLocationEnabled()) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude())
-                                                                 altitude:arg2 ? [arg2 altitude] : 0
-                                                       horizontalAccuracy:arg2 ? [arg2 horizontalAccuracy] : 10
-                                                         verticalAccuracy:arg2 ? [arg2 verticalAccuracy] : 10
-                                                                timestamp:arg2 ? [arg2 timestamp] : [NSDate date]];
+        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(arg2);
         %orig(arg1, fakeLocation, arg3);
     } else {
         %orig(arg1, arg2, arg3);
@@ -574,11 +594,7 @@ static void loadLocationSettings() {
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
     if (isFakeLocationEnabled()) {
         CLLocation *originalLocation = arg2.firstObject;
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude())
-                                                                 altitude:originalLocation ? [originalLocation altitude] : 0
-                                                       horizontalAccuracy:originalLocation ? [originalLocation horizontalAccuracy] : 10
-                                                         verticalAccuracy:originalLocation ? [originalLocation verticalAccuracy] : 10
-                                                                timestamp:originalLocation ? [originalLocation timestamp] : [NSDate date]];
+        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(originalLocation);
         %orig(arg1, @[fakeLocation]);
     } else {
         %orig(arg1, arg2);
@@ -619,12 +635,7 @@ static void loadLocationSettings() {
 
 - (void)updateLocationCache:(id)arg1 isMarsLocation:(_Bool)arg2 {
     if (isFakeLocationEnabled()) {
-        CLLocation *originalLocation = (CLLocation *)arg1;
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude())
-                                                                 altitude:[originalLocation altitude]
-                                                       horizontalAccuracy:[originalLocation horizontalAccuracy]
-                                                         verticalAccuracy:[originalLocation verticalAccuracy]
-                                                                timestamp:[originalLocation timestamp]];
+        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(arg1);
         %orig(fakeLocation, arg2);
     } else {
         %orig(arg1, arg2);
@@ -693,10 +704,6 @@ static void loadLocationSettings() {
             if ([self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
                 [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
             }
-            
-            if ([self.delegate respondsToSelector:@selector(locationManager:didUpdateToLocation:fromLocation:)]) {
-                [self.delegate locationManager:self didUpdateToLocation:fakeLocation fromLocation:nil];
-            }
         });
     } else {
         %orig;
@@ -715,16 +722,12 @@ static void loadLocationSettings() {
 %hook CLLocation
 - (CLLocationCoordinate2D)coordinate {
     if (isFakeLocationEnabled()) {
-        static dispatch_once_t onceToken;
-        static BOOL isInOurCode = NO;
-        dispatch_once(&onceToken, ^{
-            NSArray *callStackSymbols = [NSThread callStackSymbols];
-            NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-            isInOurCode = [callStackString containsString:@"DD虚拟定位"] || 
-                         [callStackString containsString:@"DDVirtualLocation"];
-        });
+        NSArray *callStackSymbols = [NSThread callStackSymbols];
+        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
         
-        if (!isInOurCode) {
+        if (![callStackString containsString:@"DD虚拟定位"] && 
+            ![callStackString containsString:@"DDVirtualLocation"] &&
+            ![callStackString containsString:@"DDGPS"]) {
             return CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude());
         }
     }
@@ -733,16 +736,12 @@ static void loadLocationSettings() {
 
 - (double)latitude {
     if (isFakeLocationEnabled()) {
-        static dispatch_once_t onceToken;
-        static BOOL isInOurCode = NO;
-        dispatch_once(&onceToken, ^{
-            NSArray *callStackSymbols = [NSThread callStackSymbols];
-            NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-            isInOurCode = [callStackString containsString:@"DD虚拟定位"] || 
-                         [callStackString containsString:@"DDVirtualLocation"];
-        });
+        NSArray *callStackSymbols = [NSThread callStackSymbols];
+        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
         
-        if (!isInOurCode) {
+        if (![callStackString containsString:@"DD虚拟定位"] && 
+            ![callStackString containsString:@"DDVirtualLocation"] &&
+            ![callStackString containsString:@"DDGPS"]) {
             return getFakeLatitude();
         }
     }
@@ -751,16 +750,12 @@ static void loadLocationSettings() {
 
 - (double)longitude {
     if (isFakeLocationEnabled()) {
-        static dispatch_once_t onceToken;
-        static BOOL isInOurCode = NO;
-        dispatch_once(&onceToken, ^{
-            NSArray *callStackSymbols = [NSThread callStackSymbols];
-            NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-            isInOurCode = [callStackString containsString:@"DD虚拟定位"] || 
-                         [callStackString containsString:@"DDVirtualLocation"];
-        });
+        NSArray *callStackSymbols = [NSThread callStackSymbols];
+        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
         
-        if (!isInOurCode) {
+        if (![callStackString containsString:@"DD虚拟定位"] && 
+            ![callStackString containsString:@"DDVirtualLocation"] &&
+            ![callStackString containsString:@"DDGPS"]) {
             return getFakeLongitude();
         }
     }
