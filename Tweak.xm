@@ -12,7 +12,7 @@ static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled"
 static NSString * const kLatitudeKey = @"latitude";
 static NSString * const kLongitudeKey = @"longitude";
 
-// MARK: - 全局位置管理器（添加临时禁用功能）
+// MARK: - 全局位置管理器
 @interface WeChatLocationManager : NSObject
 + (instancetype)sharedManager;
 @property (nonatomic, assign) BOOL isEnabled;
@@ -121,8 +121,8 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - 地图选择视图控制器（修改以支持临时禁用）
-@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
+// MARK: - 地图选择视图控制器（已修复编译错误）
+@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate, CLLocationManagerDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
 @property (strong, nonatomic) CLGeocoder *geocoder;
@@ -152,7 +152,7 @@ static NSString * const kLongitudeKey = @"longitude";
     
     // 初始化位置管理器（用于可选的真实定位）
     self.locationManager = [[CLLocationManager alloc] init];
-    self.locationManager.delegate = self;
+    self.locationManager.delegate = self; // ✅ 已修复：现在LocationMapViewController已遵循CLLocationManagerDelegate协议
     self.isUsingRealLocation = NO;
 }
 
@@ -303,11 +303,13 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (void)centerToCurrentLocation {
-    // 请求真实位置权限
-    if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusNotDetermined) {
+    // ✅ 已修复：使用实例方法而不是已废弃的类方法
+    CLAuthorizationStatus status = [self.locationManager authorizationStatus];
+    
+    if (status == kCLAuthorizationStatusNotDetermined) {
         [self.locationManager requestWhenInUseAuthorization];
-    } else if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedWhenInUse ||
-               [CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedAlways) {
+    } else if (status == kCLAuthorizationStatusAuthorizedWhenInUse ||
+               status == kCLAuthorizationStatusAuthorizedAlways) {
         // 开始获取真实位置
         [self.locationManager startUpdatingLocation];
         self.isUsingRealLocation = YES;
@@ -476,7 +478,7 @@ static NSString * const kLongitudeKey = @"longitude";
         }
     }
     
-    // 由于虚拟定位已临时禁用，地理编码可以正常工作
+    // 由于虚拟定位已临时禁用，地理编码器可以正常工作
     [self.geocoder geocodeAddressString:searchText completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
         if (error) {
             [self showAlertWithTitle:@"搜索失败" message:@"未找到该地点，请尝试输入坐标格式：纬度,经度"];
@@ -545,7 +547,7 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - 设置视图控制器（保持不变）
+// MARK: - 设置视图控制器
 @interface DDVirtualLocationSettingsViewController : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, strong) UITableView *tableView;
 @end
@@ -703,7 +705,7 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - Hook CLLocationManager（关键修改）
+// MARK: - Hook CLLocationManager
 %hook CLLocationManager
 
 - (void)startUpdatingLocation {
