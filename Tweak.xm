@@ -11,19 +11,86 @@
 static NSString * const kGlobalFakeLocationEnabledKey = @"com.dd.global.virtual.location.enabled";
 static NSString * const kGlobalFakeLatitudeKey = @"com.dd.global.virtual.location.latitude";
 static NSString * const kGlobalFakeLongitudeKey = @"com.dd.global.virtual.location.longitude";
+static NSString * const kGlobalFakeAltitudeKey = @"com.dd.global.virtual.location.altitude";
+static NSString * const kGlobalFakeAccuracyKey = @"com.dd.global.virtual.location.accuracy";
 
-// MARK: - 设置状态检查函数
-static BOOL isGlobalFakeLocationEnabled() {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:kGlobalFakeLocationEnabledKey];
+// MARK: - 位置管理器
+@interface DDLocationManager : NSObject
++ (instancetype)sharedManager;
+@property (nonatomic, assign) BOOL isLocationSpoofingEnabled;
+@property (nonatomic, strong) CLLocation *cachedFakeLocation;
+@property (nonatomic, strong) NSDate *lastLocationUpdate;
+- (void)loadSettings;
+- (void)saveSettings;
+- (CLLocation *)getFakeLocation;
+- (CLLocation *)createFakeLocation;
+@end
+
+@implementation DDLocationManager
+
++ (instancetype)sharedManager {
+    static DDLocationManager *sharedInstance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[DDLocationManager alloc] init];
+    });
+    return sharedInstance;
 }
 
-static double getGlobalFakeLatitude() {
-    return [[NSUserDefaults standardUserDefaults] doubleForKey:kGlobalFakeLatitudeKey];
+- (instancetype)init {
+    if (self = [super init]) {
+        [self loadSettings];
+    }
+    return self;
 }
 
-static double getGlobalFakeLongitude() {
-    return [[NSUserDefaults standardUserDefaults] doubleForKey:kGlobalFakeLongitudeKey];
+- (void)loadSettings {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    _isLocationSpoofingEnabled = [defaults boolForKey:kGlobalFakeLocationEnabledKey];
 }
+
+- (void)saveSettings {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:_isLocationSpoofingEnabled forKey:kGlobalFakeLocationEnabledKey];
+    [defaults synchronize];
+}
+
+- (CLLocation *)getFakeLocation {
+    // 检查是否需要刷新缓存的位置
+    if (!_cachedFakeLocation || [[NSDate date] timeIntervalSinceDate:_lastLocationUpdate] > 1.0) {
+        _cachedFakeLocation = [self createFakeLocation];
+        _lastLocationUpdate = [NSDate date];
+    }
+    return _cachedFakeLocation;
+}
+
+- (CLLocation *)createFakeLocation {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    double latitude = [defaults doubleForKey:kGlobalFakeLatitudeKey];
+    double longitude = [defaults doubleForKey:kGlobalFakeLongitudeKey];
+    double altitude = [defaults doubleForKey:kGlobalFakeAltitudeKey];
+    double accuracy = [defaults doubleForKey:kGlobalFakeAccuracyKey] ?: 5.0;
+    
+    // 如果坐标无效，使用默认值
+    if (latitude == 0 && longitude == 0) {
+        latitude = 39.9035;
+        longitude = 116.3976;
+    }
+    
+    // 添加轻微随机抖动，提高真实性
+    double latOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.00001;
+    double lngOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.00001;
+    double accuracyJitter = ((double)arc4random() / UINT32_MAX) * 2.0;
+    
+    return [[CLLocation alloc] 
+            initWithCoordinate:CLLocationCoordinate2DMake(latitude + latOffset, longitude + lngOffset)
+            altitude:altitude
+            horizontalAccuracy:accuracy + accuracyJitter
+            verticalAccuracy:accuracy + accuracyJitter
+            timestamp:[NSDate date]];
+}
+
+@end
 
 // MARK: - 地图选择视图控制器
 @interface GlobalLocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
@@ -151,7 +218,11 @@ static double getGlobalFakeLongitude() {
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
-    CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake(getGlobalFakeLatitude(), getGlobalFakeLongitude());
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    double latitude = [defaults doubleForKey:kGlobalFakeLatitudeKey] ?: 39.9035;
+    double longitude = [defaults doubleForKey:kGlobalFakeLongitudeKey] ?: 116.3976;
+    
+    CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake(latitude, longitude);
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
     [self.mapView setRegion:region animated:YES];
     
@@ -240,6 +311,9 @@ static double getGlobalFakeLongitude() {
         [defaults setDouble:coordinate.latitude forKey:kGlobalFakeLatitudeKey];
         [defaults setDouble:coordinate.longitude forKey:kGlobalFakeLongitudeKey];
         [defaults synchronize];
+        
+        // 重置位置缓存
+        [[DDLocationManager sharedManager] setCachedFakeLocation:nil];
         
         UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
         [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
@@ -394,14 +468,14 @@ static double getGlobalFakeLongitude() {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2; // 开关和位置选择
+    return 2;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) {
-        return 1; // 开关
+        return 1;
     } else {
-        return [[NSUserDefaults standardUserDefaults] boolForKey:kGlobalFakeLocationEnabledKey] ? 1 : 0;
+        return [[DDLocationManager sharedManager] isLocationSpoofingEnabled] ? 1 : 0;
     }
 }
 
@@ -435,7 +509,7 @@ static double getGlobalFakeLongitude() {
         
         UISwitch *switchView = [[UISwitch alloc] init];
         switchView.onTintColor = [UIColor systemBlueColor];
-        switchView.on = [defaults boolForKey:kGlobalFakeLocationEnabledKey];
+        switchView.on = [[DDLocationManager sharedManager] isLocationSpoofingEnabled];
         [switchView addTarget:self action:@selector(globalFakeLocationEnabledChanged:) forControlEvents:UIControlEventValueChanged];
         
         cell.accessoryView = switchView;
@@ -502,9 +576,11 @@ static double getGlobalFakeLongitude() {
 }
 
 - (void)globalFakeLocationEnabledChanged:(UISwitch *)sender {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:sender.isOn forKey:kGlobalFakeLocationEnabledKey];
-    [defaults synchronize];
+    [[DDLocationManager sharedManager] setIsLocationSpoofingEnabled:sender.isOn];
+    [[DDLocationManager sharedManager] saveSettings];
+    
+    // 重置位置缓存
+    [[DDLocationManager sharedManager] setCachedFakeLocation:nil];
     
     [self.tableView reloadData];
     
@@ -520,22 +596,163 @@ static double getGlobalFakeLongitude() {
 // MARK: - Hook实现
 %hook CLLocationManager
 
-// 拦截位置更新方法
+// 关键：拦截位置更新方法
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
-    if (isGlobalFakeLocationEnabled()) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getGlobalFakeLatitude() longitude:getGlobalFakeLongitude()];
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
         %orig(arg1, @[fakeLocation]);
     } else {
         %orig(arg1, arg2);
     }
 }
 
-// 拦截location属性
-- (CLLocation *)location {
-    if (isGlobalFakeLocationEnabled()) {
-        return [[CLLocation alloc] initWithLatitude:getGlobalFakeLatitude() longitude:getGlobalFakeLongitude()];
+// 关键：拦截startUpdatingLocation
+- (void)startUpdatingLocation {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        // 先立即发送一次位置更新
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        
+        if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+            [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
+        }
+        
+        // 设置定时器持续发送位置更新
+        [self setupFakeLocationTimer];
+    } else {
+        %orig;
+    }
+}
+
+// 关键：设置定时器
+%new
+- (void)setupFakeLocationTimer {
+    // 停止可能存在的旧定时器
+    dispatch_source_t oldTimer = objc_getAssociatedObject(self, "fakeLocationTimer");
+    if (oldTimer) {
+        dispatch_source_cancel(oldTimer);
     }
     
+    // 创建新定时器
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, 
+                           dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), 
+                           1.0 * NSEC_PER_SEC,  // 每1秒更新一次
+                           0.1 * NSEC_PER_SEC);
+    
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(timer, ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf && [[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+            CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+            
+            if (strongSelf.delegate && [strongSelf.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+                [strongSelf.delegate locationManager:strongSelf didUpdateLocations:@[fakeLocation]];
+            }
+        }
+    });
+    
+    dispatch_resume(timer);
+    
+    // 将定时器关联到对象
+    objc_setAssociatedObject(self, "fakeLocationTimer", timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// 关键：拦截stopUpdatingLocation
+- (void)stopUpdatingLocation {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        // 停止定时器
+        dispatch_source_t timer = objc_getAssociatedObject(self, "fakeLocationTimer");
+        if (timer) {
+            dispatch_source_cancel(timer);
+            objc_setAssociatedObject(self, "fakeLocationTimer", nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    } else {
+        %orig;
+    }
+}
+
+// 关键：拦截位置属性
+- (CLLocation *)location {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        return [[DDLocationManager sharedManager] getFakeLocation];
+    }
+    return %orig;
+}
+
+// 模拟定位服务开启状态
+- (BOOL)locationServicesEnabled {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        return YES;
+    }
+    return %orig;
+}
+
+// 模拟授权状态
+- (CLAuthorizationStatus)authorizationStatus {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        return kCLAuthorizationStatusAuthorizedWhenInUse;
+    }
+    return %orig;
+}
+
+%end
+
+// 关键：Hook CLLocation的属性
+%hook CLLocation
+
+- (CLLocationCoordinate2D)coordinate {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.coordinate;
+    }
+    return %orig;
+}
+
+- (CLLocationAccuracy)horizontalAccuracy {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.horizontalAccuracy;
+    }
+    return %orig;
+}
+
+- (CLLocationAccuracy)verticalAccuracy {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.verticalAccuracy;
+    }
+    return %orig;
+}
+
+- (CLLocationDistance)altitude {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.altitude;
+    }
+    return %orig;
+}
+
+- (CLLocationSpeed)speed {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.speed;
+    }
+    return %orig;
+}
+
+- (CLLocationDirection)course {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.course;
+    }
+    return %orig;
+}
+
+- (NSDate *)timestamp {
+    if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+        return fakeLocation.timestamp;
+    }
     return %orig;
 }
 
@@ -559,9 +776,13 @@ static double getGlobalFakeLongitude() {
         if ([defaults doubleForKey:kGlobalFakeLatitudeKey] == 0 && [defaults doubleForKey:kGlobalFakeLongitudeKey] == 0) {
             [defaults setDouble:39.9035 forKey:kGlobalFakeLatitudeKey];
             [defaults setDouble:116.3976 forKey:kGlobalFakeLongitudeKey];
+            [defaults setDouble:50.0 forKey:kGlobalFakeAltitudeKey];
+            [defaults setDouble:5.0 forKey:kGlobalFakeAccuracyKey];
+            [defaults synchronize];
         }
         
-        [defaults synchronize];
+        // 初始化位置管理器
+        [DDLocationManager sharedManager];
         
         // 注册插件到微信插件管理器
         Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
