@@ -546,16 +546,6 @@ static void loadGlobalLocationSettings() {
 // MARK: - Hook实现 - 全局CLLocationManager
 %hook CLLocationManager
 
-// 拦截位置更新方法 (iOS 6+ 兼容)
-- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
-    if (isGlobalFakeLocationEnabled()) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getGlobalFakeLatitude() longitude:getGlobalFakeLongitude()];
-        %orig(arg1, fakeLocation, arg3);
-    } else {
-        %orig(arg1, arg2, arg3);
-    }
-}
-
 // 拦截位置更新方法 (iOS 6+)
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
     if (isGlobalFakeLocationEnabled()) {
@@ -575,11 +565,6 @@ static void loadGlobalLocationSettings() {
         // 调用代理方法（如果设置了代理）
         if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
             [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
-        }
-        
-        // 同时调用旧版方法（兼容）
-        if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateToLocation:fromLocation:)]) {
-            [self.delegate locationManager:self didUpdateToLocation:fakeLocation fromLocation:nil];
         }
         
         // 不调用原始方法，避免真实定位
