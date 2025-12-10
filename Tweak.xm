@@ -574,7 +574,12 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - Hook CLLocationManager（使用新方法）
+// MARK: - 静态回调函数声明
+static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    [[WeChatLocationManager sharedManager] loadSettings];
+}
+
+// MARK: - Hook CLLocationManager（修复弃用API问题）
 %hook CLLocationManager
 
 - (void)startUpdatingLocation {
@@ -588,9 +593,8 @@ static NSString * const kLongitudeKey = @"longitude";
                 [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
             }
             
-            if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateToLocation:fromLocation:)]) {
-                [self.delegate locationManager:self didUpdateToLocation:fakeLocation fromLocation:nil];
-            }
+            // 只使用新的API，移除弃用的API调用
+            // 旧API locationManager:didUpdateToLocation:fromLocation: 在iOS 6.0后已废弃
         });
         
         // 设置定时器持续发送虚拟位置
@@ -687,12 +691,10 @@ static NSString * const kLongitudeKey = @"longitude";
         
         [[WeChatLocationManager sharedManager] loadSettings];
         
-        // 监听设置变化
+        // 监听设置变化 - 使用静态函数而不是block
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
-                                        (CFNotificationCallback)^{
-                                            [[WeChatLocationManager sharedManager] loadSettings];
-                                        },
+                                        loadLocationSettingsCallback,
                                         CFSTR("com.dd.virtual.location.settings_changed"),
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
