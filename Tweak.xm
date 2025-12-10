@@ -5,22 +5,32 @@
 #import <MapKit/MapKit.h>
 
 #define PLUGIN_NAME @"DD虚拟定位"
-#define PLUGIN_VERSION @"1.0.1"
+#define PLUGIN_VERSION @"1.0.2"
 
 // MARK: - 设置键名
 static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled";
 static NSString * const kLatitudeKey = @"latitude";
 static NSString * const kLongitudeKey = @"longitude";
 
-// MARK: - 全局位置管理器
+// MARK: - 全局位置管理器（添加临时禁用功能）
 @interface WeChatLocationManager : NSObject
 + (instancetype)sharedManager;
 @property (nonatomic, assign) BOOL isEnabled;
 @property (nonatomic, assign) double latitude;
 @property (nonatomic, assign) double longitude;
+
+// 临时禁用功能
+@property (nonatomic, assign) BOOL temporarilyDisabled;
+@property (nonatomic, assign) BOOL originalEnabledState;
+
 - (CLLocation *)getCurrentFakeLocation;
 - (void)setLocationWithLatitude:(double)lat longitude:(double)lng;
 - (void)loadSettings;
+
+// 临时禁用/恢复方法
+- (void)enableTemporaryDisable;
+- (void)disableTemporaryDisable;
+- (BOOL)isVirtualLocationEnabled; // 判断是否应该启用虚拟定位
 @end
 
 @implementation WeChatLocationManager
@@ -36,6 +46,8 @@ static NSString * const kLongitudeKey = @"longitude";
 
 - (instancetype)init {
     if (self = [super init]) {
+        _temporarilyDisabled = NO;
+        _originalEnabledState = NO;
         [self loadSettings];
     }
     return self;
@@ -65,6 +77,11 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (CLLocation *)getCurrentFakeLocation {
+    // 如果临时禁用，返回nil
+    if (self.temporarilyDisabled) {
+        return nil;
+    }
+    
     // 添加微小随机偏移增加真实性
     double latOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
     double lngOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
@@ -81,15 +98,39 @@ static NSString * const kLongitudeKey = @"longitude";
     return fakeLocation;
 }
 
+// MARK: - 临时禁用功能实现
+- (void)enableTemporaryDisable {
+    if (!self.temporarilyDisabled) {
+        self.originalEnabledState = self.isEnabled;
+        self.temporarilyDisabled = YES;
+        NSLog(@"[DDGPS] 已临时禁用虚拟定位，原始状态: %d", self.originalEnabledState);
+    }
+}
+
+- (void)disableTemporaryDisable {
+    if (self.temporarilyDisabled) {
+        self.temporarilyDisabled = NO;
+        NSLog(@"[DDGPS] 已恢复虚拟定位，恢复状态: %d", self.originalEnabledState);
+    }
+}
+
+- (BOOL)isVirtualLocationEnabled {
+    // 如果临时禁用，返回NO；否则返回实际启用状态
+    return !self.temporarilyDisabled && self.isEnabled;
+}
+
 @end
 
-// MARK: - 地图选择视图控制器
-@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate, CLLocationManagerDelegate>
+// MARK: - 地图选择视图控制器（修改以支持临时禁用）
+@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
 @property (strong, nonatomic) CLGeocoder *geocoder;
-@property (strong, nonatomic) CLLocationManager *locationManager;
 @property (copy, nonatomic) void (^completionHandler)(CLLocationCoordinate2D coordinate);
+
+// 添加位置管理器用于在地图界面中使用真实位置
+@property (strong, nonatomic) CLLocationManager *locationManager;
+@property (assign, nonatomic) BOOL isUsingRealLocation;
 @end
 
 @implementation LocationMapViewController
@@ -100,19 +141,37 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = @"选择位置";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
-    // 禁用虚拟定位在地图中的使用
-    [self setupLocationManager];
+    // 在地图界面中临时禁用虚拟定位
+    [[WeChatLocationManager sharedManager] enableTemporaryDisable];
+    
     [self setupNavigationBar];
     [self setupUI];
     [self setupMap];
     
     self.geocoder = [[CLGeocoder alloc] init];
-}
-
-- (void)setupLocationManager {
+    
+    // 初始化位置管理器（用于可选的真实定位）
     self.locationManager = [[CLLocationManager alloc] init];
     self.locationManager.delegate = self;
-    self.locationManager.desiredAccuracy = kCLLocationAccuracyBest;
+    self.isUsingRealLocation = NO;
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    
+    // 离开地图界面时恢复虚拟定位设置
+    [[WeChatLocationManager sharedManager] disableTemporaryDisable];
+    
+    // 停止真实位置更新
+    if (self.isUsingRealLocation) {
+        [self.locationManager stopUpdatingLocation];
+        self.isUsingRealLocation = NO;
+    }
+}
+
+- (void)dealloc {
+    // 确保恢复虚拟定位
+    [[WeChatLocationManager sharedManager] disableTemporaryDisable];
 }
 
 - (void)setupNavigationBar {
@@ -121,6 +180,13 @@ static NSString * const kLongitudeKey = @"longitude";
     
     UIBarButtonItem *confirmButton = [[UIBarButtonItem alloc] initWithTitle:@"确认" style:UIBarButtonItemStyleDone target:self action:@selector(confirmMapSelection)];
     self.navigationItem.rightBarButtonItem = confirmButton;
+    
+    // 添加定位按钮（可选使用真实位置）
+    UIBarButtonItem *locateButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"location.fill"] 
+                                                                     style:UIBarButtonItemStylePlain 
+                                                                    target:self 
+                                                                    action:@selector(centerToCurrentLocation)];
+    self.navigationItem.leftBarButtonItems = @[cancelButton, locateButton];
     
     UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
     [appearance configureWithOpaqueBackground];
@@ -148,7 +214,7 @@ static NSString * const kLongitudeKey = @"longitude";
     
     self.searchBar = [[UISearchBar alloc] init];
     self.searchBar.delegate = self;
-    self.searchBar.placeholder = @"搜索地点或输入坐标";
+    self.searchBar.placeholder = @"搜索地点或输入坐标（格式：纬度,经度）";
     self.searchBar.searchBarStyle = UISearchBarStyleDefault;
     self.searchBar.barTintColor = [UIColor clearColor];
     self.searchBar.backgroundImage = [[UIImage alloc] init];
@@ -198,7 +264,9 @@ static NSString * const kLongitudeKey = @"longitude";
 - (void)setupMap {
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
-    self.mapView.showsUserLocation = NO; // 禁用用户位置显示
+    
+    // 关键：不显示用户位置，不自动定位
+    self.mapView.showsUserLocation = NO;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
     self.mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
@@ -218,7 +286,7 @@ static NSString * const kLongitudeKey = @"longitude";
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
-    // 加载保存的位置，而不是使用实时定位
+    // 使用虚拟位置作为初始位置，但不使用定位服务
     CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
                                                                      [WeChatLocationManager sharedManager].longitude);
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
@@ -226,12 +294,30 @@ static NSString * const kLongitudeKey = @"longitude";
     
     MKPointAnnotation *existingAnnotation = [[MKPointAnnotation alloc] init];
     existingAnnotation.coordinate = initialCoord;
-    existingAnnotation.title = @"已保存位置";
+    existingAnnotation.title = @"虚拟位置";
     [self.mapView addAnnotation:existingAnnotation];
 }
 
 - (void)closeMapSelection {
     [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)centerToCurrentLocation {
+    // 请求真实位置权限
+    if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusNotDetermined) {
+        [self.locationManager requestWhenInUseAuthorization];
+    } else if ([CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedWhenInUse ||
+               [CLLocationManager authorizationStatus] == kCLAuthorizationStatusAuthorizedAlways) {
+        // 开始获取真实位置
+        [self.locationManager startUpdatingLocation];
+        self.isUsingRealLocation = YES;
+        self.mapView.showsUserLocation = YES;
+        
+        // 显示提示
+        [self showAlertWithTitle:@"提示" message:@"正在获取您的真实位置..."];
+    } else {
+        [self showAlertWithTitle:@"无法定位" message:@"请检查定位权限设置"];
+    }
 }
 
 - (void)handleMapLongPress:(UILongPressGestureRecognizer *)gesture {
@@ -350,7 +436,7 @@ static NSString * const kLongitudeKey = @"longitude";
         markerView.annotation = annotation;
     }
     
-    if ([annotation.title isEqualToString:@"已保存位置"]) {
+    if ([annotation.title isEqualToString:@"虚拟位置"]) {
         markerView.markerTintColor = [UIColor systemGreenColor];
         markerView.glyphImage = [UIImage systemImageNamed:@"mappin.circle.fill"];
     } else if ([annotation.title isEqualToString:@"选择的位置"]) {
@@ -390,6 +476,7 @@ static NSString * const kLongitudeKey = @"longitude";
         }
     }
     
+    // 由于虚拟定位已临时禁用，地理编码可以正常工作
     [self.geocoder geocodeAddressString:searchText completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
         if (error) {
             [self showAlertWithTitle:@"搜索失败" message:@"未找到该地点，请尝试输入坐标格式：纬度,经度"];
@@ -423,9 +510,42 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.mapView selectAnnotation:annotation animated:YES];
 }
 
+#pragma mark - CLLocationManagerDelegate
+- (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    if (locations.count > 0 && self.isUsingRealLocation) {
+        CLLocation *currentLocation = locations.firstObject;
+        
+        // 将地图中心移动到真实位置
+        MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
+        [self.mapView setRegion:region animated:YES];
+        
+        // 添加标注
+        MKPointAnnotation *annotation = [[MKPointAnnotation alloc] init];
+        annotation.coordinate = currentLocation.coordinate;
+        annotation.title = @"真实位置";
+        annotation.subtitle = @"您的当前位置";
+        [self.mapView addAnnotation:annotation];
+        
+        // 停止更新位置
+        [manager stopUpdatingLocation];
+        self.isUsingRealLocation = NO;
+    }
+}
+
+- (void)locationManager:(CLLocationManager *)manager didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
+    if (status == kCLAuthorizationStatusAuthorizedWhenInUse || status == kCLAuthorizationStatusAuthorizedAlways) {
+        // 权限已授予，开始定位
+        [manager startUpdatingLocation];
+        self.isUsingRealLocation = YES;
+        self.mapView.showsUserLocation = YES;
+    } else {
+        [self showAlertWithTitle:@"定位权限" message:@"需要定位权限才能使用此功能"];
+    }
+}
+
 @end
 
-// MARK: - 设置视图控制器
+// MARK: - 设置视图控制器（保持不变）
 @interface DDVirtualLocationSettingsViewController : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, strong) UITableView *tableView;
 @end
@@ -437,7 +557,6 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = PLUGIN_NAME;
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
-    // iOS15+ 模态样式
     if (@available(iOS 15.0, *)) {
         self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
         
@@ -584,63 +703,13 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - 静态回调函数声明
-static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    [[WeChatLocationManager sharedManager] loadSettings];
-}
-
-// MARK: - 简化的判断是否在插件地图页面的方法
-// 由于判断比较复杂且可能有问题，我们改用更简单的方法：
-// 在LocationMapViewController中添加一个类方法来判断，或者通过当前视图控制器的类名判断
-static BOOL isInPluginMapView() {
-    // 获取最顶层的视图控制器
-    UIViewController *topViewController = nil;
-    
-    if (@available(iOS 13.0, *)) {
-        // iOS 13+ 使用windowScene的方式
-        NSSet<UIScene *> *connectedScenes = [UIApplication sharedApplication].connectedScenes;
-        for (UIScene *scene in connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                UIWindowScene *windowScene = (UIWindowScene *)scene;
-                for (UIWindow *window in windowScene.windows) {
-                    if (window.isKeyWindow) {
-                        topViewController = window.rootViewController;
-                        break;
-                    }
-                }
-                if (topViewController) break;
-            }
-        }
-    }
-    
-    // 如果没找到，使用旧的兼容方法
-    if (!topViewController) {
-        topViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-    }
-    
-    // 查找模态视图控制器
-    while (topViewController.presentedViewController) {
-        topViewController = topViewController.presentedViewController;
-    }
-    
-    // 如果是导航控制器，获取其顶层视图控制器
-    if ([topViewController isKindOfClass:[UINavigationController class]]) {
-        topViewController = [(UINavigationController *)topViewController topViewController];
-    }
-    
-    // 判断当前顶层视图控制器是否是LocationMapViewController
-    return [topViewController isKindOfClass:NSClassFromString(@"LocationMapViewController")];
-}
-
-// MARK: - Hook CLLocationManager（在地图页面禁用虚拟定位）
+// MARK: - Hook CLLocationManager（关键修改）
 %hook CLLocationManager
 
 - (void)startUpdatingLocation {
-    // 如果在地图页面，使用原始位置（地图功能正常工作）
-    if (isInPluginMapView()) {
-        %orig;
-    } else if ([WeChatLocationManager sharedManager].isEnabled) {
-        NSLog(@"[DDGPS] 拦截位置更新请求");
+    // 使用新的判断方法，考虑临时禁用状态
+    if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
+        NSLog(@"[DDGPS] 拦截位置更新请求（虚拟定位启用）");
         
         dispatch_async(dispatch_get_main_queue(), ^{
             CLLocation *fakeLocation = [[WeChatLocationManager sharedManager] getCurrentFakeLocation];
@@ -665,7 +734,7 @@ static BOOL isInPluginMapView() {
         __weak typeof(self) weakSelf = self;
         dispatch_source_set_event_handler(locationTimer, ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!isInPluginMapView() && [WeChatLocationManager sharedManager].isEnabled) {
+            if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
                 CLLocation *fakeLocation = [[WeChatLocationManager sharedManager] getCurrentFakeLocation];
                 
                 if (strongSelf.delegate && [strongSelf.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -676,20 +745,18 @@ static BOOL isInPluginMapView() {
         
         dispatch_resume(locationTimer);
     } else {
-        %orig;
+        NSLog(@"[DDGPS] 允许真实位置更新（虚拟定位临时禁用或未启用）");
+        %orig; // 调用原始方法，获取真实位置
     }
 }
 
 - (void)stopUpdatingLocation {
-    if (!isInPluginMapView() && [WeChatLocationManager sharedManager].isEnabled) {
-        NSLog(@"[DDGPS] 停止位置更新");
-    } else {
-        %orig;
-    }
+    %orig;
+    NSLog(@"[DDGPS] 停止位置更新");
 }
 
 - (CLAuthorizationStatus)authorizationStatus {
-    if (!isInPluginMapView() && [WeChatLocationManager sharedManager].isEnabled) {
+    if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
         return kCLAuthorizationStatusAuthorizedWhenInUse;
     }
     return %orig;
@@ -697,11 +764,11 @@ static BOOL isInPluginMapView() {
 
 %end
 
-// MARK: - Hook CLLocation（在地图页面禁用虚拟定位）
+// MARK: - Hook CLLocation（补充位置信息）
 %hook CLLocation
 
 - (CLLocationCoordinate2D)coordinate {
-    if (!isInPluginMapView() && [WeChatLocationManager sharedManager].isEnabled) {
+    if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
         return CLLocationCoordinate2DMake(
             [WeChatLocationManager sharedManager].latitude,
             [WeChatLocationManager sharedManager].longitude
@@ -711,13 +778,18 @@ static BOOL isInPluginMapView() {
 }
 
 - (CLLocationAccuracy)horizontalAccuracy {
-    if (!isInPluginMapView() && [WeChatLocationManager sharedManager].isEnabled) {
+    if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
         return 5.0;
     }
     return %orig;
 }
 
 %end
+
+// MARK: - 静态回调函数声明
+static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    [[WeChatLocationManager sharedManager] loadSettings];
+}
 
 // MARK: - 插件管理器注册
 @interface WCPluginsMgr : NSObject
@@ -745,7 +817,7 @@ static BOOL isInPluginMapView() {
         
         [[WeChatLocationManager sharedManager] loadSettings];
         
-        // 监听设置变化 - 使用静态函数而不是block
+        // 监听设置变化
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         loadLocationSettingsCallback,
