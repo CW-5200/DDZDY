@@ -12,11 +12,6 @@ static NSString * const kGlobalFakeLocationEnabledKey = @"com.dd.global.virtual.
 static NSString * const kGlobalFakeLatitudeKey = @"com.dd.global.virtual.location.latitude";
 static NSString * const kGlobalFakeLongitudeKey = @"com.dd.global.virtual.location.longitude";
 
-// MARK: - 全局变量
-static BOOL gGlobalFakeLocationEnabled = NO;
-static double gGlobalFakeLatitude = 39.9035;
-static double gGlobalFakeLongitude = 116.3976;
-
 // MARK: - 设置状态检查函数
 static BOOL isGlobalFakeLocationEnabled() {
     return [[NSUserDefaults standardUserDefaults] boolForKey:kGlobalFakeLocationEnabledKey];
@@ -30,23 +25,7 @@ static double getGlobalFakeLongitude() {
     return [[NSUserDefaults standardUserDefaults] doubleForKey:kGlobalFakeLongitudeKey];
 }
 
-static void loadGlobalLocationSettings() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    
-    gGlobalFakeLocationEnabled = [defaults boolForKey:kGlobalFakeLocationEnabledKey];
-    gGlobalFakeLatitude = [defaults doubleForKey:kGlobalFakeLatitudeKey];
-    gGlobalFakeLongitude = [defaults doubleForKey:kGlobalFakeLongitudeKey];
-    
-    if (gGlobalFakeLatitude == 0 && gGlobalFakeLongitude == 0) {
-        gGlobalFakeLatitude = 39.9035;
-        gGlobalFakeLongitude = 116.3976;
-        [defaults setDouble:gGlobalFakeLatitude forKey:kGlobalFakeLatitudeKey];
-        [defaults setDouble:gGlobalFakeLongitude forKey:kGlobalFakeLongitudeKey];
-        [defaults synchronize];
-    }
-}
-
-// MARK: - 地图选择视图控制器（保持不变）
+// MARK: - 地图选择视图控制器
 @interface GlobalLocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
@@ -422,7 +401,6 @@ static void loadGlobalLocationSettings() {
     if (section == 0) {
         return 1; // 开关
     } else {
-        // 只有当开关开启时才显示位置选择
         return [[NSUserDefaults standardUserDefaults] boolForKey:kGlobalFakeLocationEnabledKey] ? 1 : 0;
     }
 }
@@ -436,7 +414,7 @@ static void loadGlobalLocationSettings() {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) {
-        return @"开启后，所有App将使用您设置的虚拟位置信息（需重启应用生效）";
+        return @"开启后，所有App将使用您设置的虚拟位置信息";
     }
     return nil;
 }
@@ -504,7 +482,6 @@ static void loadGlobalLocationSettings() {
     GlobalLocationMapViewController *mapVC = [[GlobalLocationMapViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mapVC];
     
-    // iOS15+ 模态样式
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     nav.sheetPresentationController.preferredCornerRadius = 16;
     
@@ -514,7 +491,6 @@ static void loadGlobalLocationSettings() {
             [UISheetPresentationControllerDetent largeDetent]
         ];
         nav.sheetPresentationController.prefersGrabberVisible = YES;
-        nav.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
     }
     
     __weak typeof(self) weakSelf = self;
@@ -530,10 +506,8 @@ static void loadGlobalLocationSettings() {
     [defaults setBool:sender.isOn forKey:kGlobalFakeLocationEnabledKey];
     [defaults synchronize];
     
-    // 刷新表格显示
     [self.tableView reloadData];
     
-    // 发送设置变更通知
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                         CFSTR("com.dd.global.virtual.location.settings_changed"),
                                         NULL,
@@ -543,10 +517,10 @@ static void loadGlobalLocationSettings() {
 
 @end
 
-// MARK: - Hook实现 - 全局CLLocationManager
+// MARK: - Hook实现
 %hook CLLocationManager
 
-// 拦截位置更新方法 (iOS 6+)
+// 拦截位置更新方法
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
     if (isGlobalFakeLocationEnabled()) {
         CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getGlobalFakeLatitude() longitude:getGlobalFakeLongitude()];
@@ -554,24 +528,6 @@ static void loadGlobalLocationSettings() {
     } else {
         %orig(arg1, arg2);
     }
-}
-
-// 拦截startUpdatingLocation，确保使用虚拟位置
-- (void)startUpdatingLocation {
-    if (isGlobalFakeLocationEnabled()) {
-        // 创建虚拟位置并立即触发一次更新
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getGlobalFakeLatitude() longitude:getGlobalFakeLongitude()];
-        
-        // 调用代理方法（如果设置了代理）
-        if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-            [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
-        }
-        
-        // 不调用原始方法，避免真实定位
-        return;
-    }
-    
-    %orig;
 }
 
 // 拦截location属性
@@ -606,17 +562,6 @@ static void loadGlobalLocationSettings() {
         }
         
         [defaults synchronize];
-        
-        // 加载设置
-        loadGlobalLocationSettings();
-        
-        // 监听设置变化
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                        NULL,
-                                        (CFNotificationCallback)loadGlobalLocationSettings,
-                                        CFSTR("com.dd.global.virtual.location.settings_changed"),
-                                        NULL,
-                                        CFNotificationSuspensionBehaviorDeliverImmediately);
         
         // 注册插件到微信插件管理器
         Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
