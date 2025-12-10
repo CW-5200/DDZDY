@@ -71,15 +71,16 @@ static NSString * const kLongitudeKey = @"longitude";
 - (CLLocation *)getCurrentFakeLocation {
     if (self.temporarilyDisabled) return nil;
     
-    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(_latitude, _longitude);
+    CLLocation *fakeLocation = [[CLLocation alloc]
+        initWithCoordinate:CLLocationCoordinate2DMake(_latitude, _longitude)
+        altitude:0
+        horizontalAccuracy:5.0
+        verticalAccuracy:3.0
+        course:0.0
+        speed:0.0
+        timestamp:[NSDate date]];
     
-    return [[CLLocation alloc] initWithCoordinate:coordinate
-                                         altitude:0
-                               horizontalAccuracy:5.0
-                                 verticalAccuracy:0.0
-                                           course:0.0
-                                            speed:0.0
-                                        timestamp:[NSDate date]];
+    return fakeLocation;
 }
 
 - (void)enableTemporaryDisable {
@@ -268,14 +269,7 @@ static NSString * const kLongitudeKey = @"longitude";
         annotation.coordinate = coordinate;
         annotation.title = @"选择的位置";
         
-        CLLocation *location = [[CLLocation alloc] initWithCoordinate:coordinate
-                                                             altitude:0
-                                                   horizontalAccuracy:0
-                                                     verticalAccuracy:0
-                                                               course:0
-                                                                speed:0
-                                                            timestamp:[NSDate date]];
-        
+        CLLocation *location = [[CLLocation alloc] initWithLatitude:coordinate.latitude longitude:coordinate.longitude];
         [self.geocoder reverseGeocodeLocation:location completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
             if (!error && placemarks.count > 0) {
                 CLPlacemark *placemark = placemarks.firstObject;
