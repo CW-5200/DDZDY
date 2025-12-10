@@ -5,41 +5,31 @@
 #import <MapKit/MapKit.h>
 
 #define PLUGIN_NAME @"DD虚拟定位"
-#define PLUGIN_VERSION @"1.0.0"
+#define PLUGIN_VERSION @"1.0.1"
 
-// MARK: - 设置键名
-static NSString * const kFakeLocationEnabledKey = @"com.dd.virtual.location.enabled";
-static NSString * const kFakeLatitudeKey = @"com.dd.virtual.location.latitude";
-static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude";
+// MARK: - 设置键名（更新为统一格式）
+static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled";
+static NSString * const kLatitudeKey = @"latitude";
+static NSString * const kLongitudeKey = @"longitude";
 
-// MARK: - 微信类声明（需要在顶部声明）
-@interface MMLocationMgr : NSObject
-- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3;
-- (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2;
-@end
-
-@interface WCLocationInfo : NSObject
-- (double)latitude;
-- (double)longitude;
-@end
-
-// MARK: - 位置管理器
-@interface DDLocationManager : NSObject
+// MARK: - 全局位置管理器
+@interface WeChatLocationManager : NSObject
 + (instancetype)sharedManager;
 @property (nonatomic, assign) BOOL isEnabled;
 @property (nonatomic, assign) double latitude;
 @property (nonatomic, assign) double longitude;
 - (CLLocation *)getCurrentFakeLocation;
+- (void)setLocationWithLatitude:(double)lat longitude:(double)lng;
 - (void)loadSettings;
 @end
 
-@implementation DDLocationManager
+@implementation WeChatLocationManager
 
 + (instancetype)sharedManager {
-    static DDLocationManager *instance = nil;
+    static WeChatLocationManager *instance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        instance = [[DDLocationManager alloc] init];
+        instance = [[WeChatLocationManager alloc] init];
     });
     return instance;
 }
@@ -53,14 +43,25 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
 
 - (void)loadSettings {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    _isEnabled = [defaults boolForKey:kFakeLocationEnabledKey];
-    _latitude = [defaults doubleForKey:kFakeLatitudeKey];
-    _longitude = [defaults doubleForKey:kFakeLongitudeKey];
+    _isEnabled = [defaults boolForKey:kLocationSpoofingEnabledKey];
+    _latitude = [defaults doubleForKey:kLatitudeKey] ?: 39.9042;
+    _longitude = [defaults doubleForKey:kLongitudeKey] ?: 116.4074;
     
-    if (_latitude == 0 && _longitude == 0) {
-        _latitude = 39.9035;
-        _longitude = 116.3976;
-    }
+    NSLog(@"[DDGPS] 加载设置: enabled=%d, lat=%.6f, lng=%.6f", _isEnabled, _latitude, _longitude);
+}
+
+- (void)setLocationWithLatitude:(double)lat longitude:(double)lng {
+    _latitude = lat;
+    _longitude = lng;
+    _isEnabled = YES;
+    
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setDouble:lat forKey:kLatitudeKey];
+    [defaults setDouble:lng forKey:kLongitudeKey];
+    [defaults setBool:YES forKey:kLocationSpoofingEnabledKey];
+    [defaults synchronize];
+    
+    NSLog(@"[DDGPS] 位置已设置: %.6f, %.6f", lat, lng);
 }
 
 - (CLLocation *)getCurrentFakeLocation {
@@ -72,7 +73,7 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
         initWithCoordinate:CLLocationCoordinate2DMake(_latitude + latOffset, _longitude + lngOffset)
         altitude:0
         horizontalAccuracy:5.0
-        verticalAccuracy:10.0
+        verticalAccuracy:3.0
         course:0.0
         speed:0.0
         timestamp:[NSDate date]];
@@ -82,159 +83,7 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
 
 @end
 
-// MARK: - 设置变更回调函数声明
-static void handleSettingsChanged() {
-    [[DDLocationManager sharedManager] loadSettings];
-}
-
-// MARK: - Hook CLLocationManager
-%hook CLLocationManager
-
-- (void)startUpdatingLocation {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        NSLog(@"[DD虚拟定位] 拦截位置更新请求");
-        
-        // 立即发送虚拟位置
-        dispatch_async(dispatch_get_main_queue(), ^{
-            CLLocation *fakeLocation = [[DDLocationManager sharedManager] getCurrentFakeLocation];
-            
-            if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-                [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
-            }
-        });
-        
-        // 设置定时器持续发送虚拟位置
-        static dispatch_source_t locationTimer;
-        if (locationTimer) {
-            dispatch_source_cancel(locationTimer);
-        }
-        
-        locationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-        dispatch_source_set_timer(locationTimer,
-                                 dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC),
-                                 1.0 * NSEC_PER_SEC,
-                                 0.1 * NSEC_PER_SEC);
-        
-        __weak typeof(self) weakSelf = self;
-        dispatch_source_set_event_handler(locationTimer, ^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if ([DDLocationManager sharedManager].isEnabled) {
-                CLLocation *fakeLocation = [[DDLocationManager sharedManager] getCurrentFakeLocation];
-                
-                if (strongSelf.delegate && [strongSelf.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-                    [strongSelf.delegate locationManager:strongSelf didUpdateLocations:@[fakeLocation]];
-                }
-            }
-        });
-        
-        dispatch_resume(locationTimer);
-    } else {
-        %orig;
-    }
-}
-
-- (void)stopUpdatingLocation {
-    if (![DDLocationManager sharedManager].isEnabled) {
-        %orig;
-    }
-}
-
-- (CLAuthorizationStatus)authorizationStatus {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return kCLAuthorizationStatusAuthorizedWhenInUse;
-    }
-    return %orig;
-}
-
-- (void)requestWhenInUseAuthorization {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        NSLog(@"[DD虚拟定位] 已授权使用定位");
-        return;
-    }
-    %orig;
-}
-
-- (void)requestAlwaysAuthorization {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        NSLog(@"[DD虚拟定位] 已授权始终使用定位");
-        return;
-    }
-    %orig;
-}
-
-%end
-
-// MARK: - Hook CLLocation
-%hook CLLocation
-
-- (CLLocationCoordinate2D)coordinate {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return CLLocationCoordinate2DMake(
-            [DDLocationManager sharedManager].latitude,
-            [DDLocationManager sharedManager].longitude
-        );
-    }
-    return %orig;
-}
-
-- (CLLocationAccuracy)horizontalAccuracy {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return 5.0;
-    }
-    return %orig;
-}
-
-- (CLLocationAccuracy)verticalAccuracy {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return 10.0;
-    }
-    return %orig;
-}
-
-%end
-
-// MARK: - 微信特定类Hook
-%hook MMLocationMgr
-
-- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getCurrentFakeLocation];
-        %orig(arg1, fakeLocation, arg3);
-    } else {
-        %orig(arg1, arg2, arg3);
-    }
-}
-
-- (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        CLLocation *fakeLocation = [[DDLocationManager sharedManager] getCurrentFakeLocation];
-        %orig(arg1, @[fakeLocation]);
-    } else {
-        %orig(arg1, arg2);
-    }
-}
-
-%end
-
-%hook WCLocationInfo
-
-- (double)latitude {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return [DDLocationManager sharedManager].latitude;
-    }
-    return %orig;
-}
-
-- (double)longitude {
-    if ([DDLocationManager sharedManager].isEnabled) {
-        return [DDLocationManager sharedManager].longitude;
-    }
-    return %orig;
-}
-
-%end
-
-// MARK: - 地图选择视图控制器
+// MARK: - 地图选择视图控制器（保持不变）
 @interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
@@ -338,8 +187,6 @@ static void handleSettingsChanged() {
 }
 
 - (void)setupMap {
-    DDLocationManager *manager = [DDLocationManager sharedManager];
-    
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
     self.mapView.showsUserLocation = YES;
@@ -362,7 +209,8 @@ static void handleSettingsChanged() {
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
-    CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake(manager.latitude, manager.longitude);
+    CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
+                                                                     [WeChatLocationManager sharedManager].longitude);
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
     [self.mapView setRegion:region animated:YES];
     
@@ -404,8 +252,8 @@ static void handleSettingsChanged() {
                 annotation.subtitle = address;
                 self.searchBar.text = address;
             } else {
-                annotation.subtitle = [NSString stringWithFormat:@"%.4f, %.4f", coordinate.latitude, coordinate.longitude];
-                self.searchBar.text = [NSString stringWithFormat:@"%.4f, %.4f", coordinate.latitude, coordinate.longitude];
+                annotation.subtitle = [NSString stringWithFormat:@"%.6f, %.6f", coordinate.latitude, coordinate.longitude];
+                self.searchBar.text = [NSString stringWithFormat:@"%.6f, %.6f", coordinate.latitude, coordinate.longitude];
             }
         }];
         
@@ -447,16 +295,8 @@ static void handleSettingsChanged() {
     if (selectedAnnotation) {
         CLLocationCoordinate2D coordinate = selectedAnnotation.coordinate;
         
-        // 保存设置
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        [defaults setDouble:coordinate.latitude forKey:kFakeLatitudeKey];
-        [defaults setDouble:coordinate.longitude forKey:kFakeLongitudeKey];
-        [defaults setBool:YES forKey:kFakeLocationEnabledKey];
-        [defaults synchronize];
-        
-        // 更新管理器
-        DDLocationManager *manager = [DDLocationManager sharedManager];
-        [manager loadSettings];
+        [[WeChatLocationManager sharedManager] setLocationWithLatitude:coordinate.latitude 
+                                                             longitude:coordinate.longitude];
         
         UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
         [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
@@ -514,7 +354,7 @@ static void handleSettingsChanged() {
 - (void)mapView:(MKMapView *)mapView annotationView:(MKAnnotationView *)view calloutAccessoryControlTapped:(UIControl *)control {
     if ([view.annotation isKindOfClass:[MKPointAnnotation class]]) {
         MKPointAnnotation *annotation = (MKPointAnnotation *)view.annotation;
-        self.searchBar.text = [NSString stringWithFormat:@"%.4f, %.4f", annotation.coordinate.latitude, annotation.coordinate.longitude];
+        self.searchBar.text = [NSString stringWithFormat:@"%.6f, %.6f", annotation.coordinate.latitude, annotation.coordinate.longitude];
         [self.searchBar becomeFirstResponder];
     }
 }
@@ -587,6 +427,7 @@ static void handleSettingsChanged() {
     self.title = PLUGIN_NAME;
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
+    // iOS15+ 模态样式
     if (@available(iOS 15.0, *)) {
         self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
         
@@ -617,7 +458,7 @@ static void handleSettingsChanged() {
     if (section == 0) {
         return 1;
     } else {
-        return [DDLocationManager sharedManager].isEnabled ? 1 : 0;
+        return [WeChatLocationManager sharedManager].isEnabled ? 1 : 0;
     }
 }
 
@@ -636,8 +477,6 @@ static void handleSettingsChanged() {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    DDLocationManager *manager = [DDLocationManager sharedManager];
-    
     if (indexPath.section == 0) {
         NSString *cellIdentifier = @"SwitchCell";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
@@ -651,7 +490,7 @@ static void handleSettingsChanged() {
         
         UISwitch *switchView = [[UISwitch alloc] init];
         switchView.onTintColor = [UIColor systemBlueColor];
-        switchView.on = manager.isEnabled;
+        switchView.on = [WeChatLocationManager sharedManager].isEnabled;
         [switchView addTarget:self action:@selector(fakeLocationEnabledChanged:) forControlEvents:UIControlEventValueChanged];
         
         cell.accessoryView = switchView;
@@ -667,9 +506,12 @@ static void handleSettingsChanged() {
             cell.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
         }
         
+        double latitude = [WeChatLocationManager sharedManager].latitude;
+        double longitude = [WeChatLocationManager sharedManager].longitude;
+        
         UIListContentConfiguration *content = [UIListContentConfiguration subtitleCellConfiguration];
         content.text = @"打开地图自定义";
-        content.secondaryText = [NSString stringWithFormat:@"当前：%.4f, %.4f", manager.latitude, manager.longitude];
+        content.secondaryText = [NSString stringWithFormat:@"当前：%.6f, %.6f", latitude, longitude];
         content.textProperties.color = [UIColor labelColor];
         content.secondaryTextProperties.color = [UIColor secondaryLabelColor];
         
@@ -717,16 +559,12 @@ static void handleSettingsChanged() {
 
 - (void)fakeLocationEnabledChanged:(UISwitch *)sender {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:sender.isOn forKey:kFakeLocationEnabledKey];
+    [defaults setBool:sender.isOn forKey:kLocationSpoofingEnabledKey];
     [defaults synchronize];
     
-    // 更新管理器
-    [[DDLocationManager sharedManager] loadSettings];
-    
-    // 刷新表格
+    [[WeChatLocationManager sharedManager] loadSettings];
     [self.tableView reloadData];
     
-    // 发送通知
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                         CFSTR("com.dd.virtual.location.settings_changed"),
                                         NULL,
@@ -736,52 +574,135 @@ static void handleSettingsChanged() {
 
 @end
 
-// MARK: - 插件初始化
+// MARK: - Hook CLLocationManager（使用新方法）
+%hook CLLocationManager
+
+- (void)startUpdatingLocation {
+    if ([WeChatLocationManager sharedManager].isEnabled) {
+        NSLog(@"[DDGPS] 拦截位置更新请求");
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CLLocation *fakeLocation = [[WeChatLocationManager sharedManager] getCurrentFakeLocation];
+            
+            if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+                [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
+            }
+            
+            if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateToLocation:fromLocation:)]) {
+                [self.delegate locationManager:self didUpdateToLocation:fakeLocation fromLocation:nil];
+            }
+        });
+        
+        // 设置定时器持续发送虚拟位置
+        static dispatch_source_t locationTimer;
+        if (locationTimer) {
+            dispatch_source_cancel(locationTimer);
+        }
+        
+        locationTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(locationTimer,
+                                 dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC),
+                                 1.0 * NSEC_PER_SEC,
+                                 0.1 * NSEC_PER_SEC);
+        
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(locationTimer, ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if ([WeChatLocationManager sharedManager].isEnabled) {
+                CLLocation *fakeLocation = [[WeChatLocationManager sharedManager] getCurrentFakeLocation];
+                
+                if (strongSelf.delegate && [strongSelf.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+                    [strongSelf.delegate locationManager:strongSelf didUpdateLocations:@[fakeLocation]];
+                }
+            }
+        });
+        
+        dispatch_resume(locationTimer);
+    } else {
+        %orig;
+    }
+}
+
+- (void)stopUpdatingLocation {
+    if (![WeChatLocationManager sharedManager].isEnabled) {
+        %orig;
+    }
+    NSLog(@"[DDGPS] 停止位置更新");
+}
+
+- (CLAuthorizationStatus)authorizationStatus {
+    if ([WeChatLocationManager sharedManager].isEnabled) {
+        return kCLAuthorizationStatusAuthorizedWhenInUse;
+    }
+    return %orig;
+}
+
+%end
+
+// MARK: - Hook CLLocation（补充位置信息）
+%hook CLLocation
+
+- (CLLocationCoordinate2D)coordinate {
+    if ([WeChatLocationManager sharedManager].isEnabled) {
+        return CLLocationCoordinate2DMake(
+            [WeChatLocationManager sharedManager].latitude,
+            [WeChatLocationManager sharedManager].longitude
+        );
+    }
+    return %orig;
+}
+
+- (CLLocationAccuracy)horizontalAccuracy {
+    if ([WeChatLocationManager sharedManager].isEnabled) {
+        return 5.0;
+    }
+    return %orig;
+}
+
+%end
+
+// MARK: - 插件管理器注册
+@interface WCPluginsMgr : NSObject
++ (instancetype)sharedInstance;
+- (void)registerControllerWithTitle:(NSString *)title version:(NSString *)version controller:(NSString *)controller;
+@end
+
 %ctor {
     @autoreleasepool {
-        NSLog(@"[DD虚拟定位] 插件加载");
+        NSLog(@"[DDGPS] 虚拟定位插件已加载 v%@", PLUGIN_VERSION);
         
         // 初始化默认设置
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         
-        if (![defaults objectForKey:kFakeLocationEnabledKey]) {
-            [defaults setBool:NO forKey:kFakeLocationEnabledKey];
+        if (![defaults objectForKey:kLocationSpoofingEnabledKey]) {
+            [defaults setBool:NO forKey:kLocationSpoofingEnabledKey];
         }
         
-        if ([defaults doubleForKey:kFakeLatitudeKey] == 0 && [defaults doubleForKey:kFakeLongitudeKey] == 0) {
-            [defaults setDouble:39.9035 forKey:kFakeLatitudeKey];
-            [defaults setDouble:116.3976 forKey:kFakeLongitudeKey];
+        if ([defaults doubleForKey:kLatitudeKey] == 0 && [defaults doubleForKey:kLongitudeKey] == 0) {
+            [defaults setDouble:39.9042 forKey:kLatitudeKey];
+            [defaults setDouble:116.4074 forKey:kLongitudeKey];
         }
         
         [defaults synchronize];
         
-        // 加载设置到管理器
-        [[DDLocationManager sharedManager] loadSettings];
+        [[WeChatLocationManager sharedManager] loadSettings];
         
         // 监听设置变化
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
-                                        (CFNotificationCallback)handleSettingsChanged,
+                                        (CFNotificationCallback)^{
+                                            [[WeChatLocationManager sharedManager] loadSettings];
+                                        },
                                         CFSTR("com.dd.virtual.location.settings_changed"),
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         
-        // 注册插件到微信插件管理器 - 如果微信中有这个类就注册
-        Class pluginsMgrClass = objc_getClass("WCPluginsMgr");
-        if (pluginsMgrClass) {
-            // 尝试动态检查方法是否存在
-            if ([pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
-                id sharedInstance = [pluginsMgrClass performSelector:@selector(sharedInstance)];
-                if (sharedInstance && [sharedInstance respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
-                    [sharedInstance performSelector:@selector(registerControllerWithTitle:version:controller:) 
-                                         withObject:PLUGIN_NAME
-                                         withObject:PLUGIN_VERSION
-                                         withObject:@"DDVirtualLocationSettingsViewController"];
-                    NSLog(@"[DD虚拟定位] 已注册到微信插件管理器");
-                }
-            }
-        } else {
-            NSLog(@"[DD虚拟定位] 微信插件管理器类不存在，跳过注册");
+        // 注册插件到微信插件管理器
+        Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
+        if (pluginsMgrClass && [pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
+            [[objc_getClass("WCPluginsMgr") sharedInstance] registerControllerWithTitle:PLUGIN_NAME 
+                                                                               version:PLUGIN_VERSION 
+                                                                           controller:@"DDVirtualLocationSettingsViewController"];
         }
     }
 }
