@@ -83,7 +83,7 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - 地图选择视图控制器（修复地图定位问题）
+// MARK: - 地图选择视图控制器
 @interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate, CLLocationManagerDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
@@ -589,54 +589,47 @@ static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *o
     [[WeChatLocationManager sharedManager] loadSettings];
 }
 
-// MARK: - 新增判断是否在插件地图页面的函数
-// 这是一个简单的方法来判断当前是否在插件的地图页面
+// MARK: - 简化的判断是否在插件地图页面的方法
+// 由于判断比较复杂且可能有问题，我们改用更简单的方法：
+// 在LocationMapViewController中添加一个类方法来判断，或者通过当前视图控制器的类名判断
 static BOOL isInPluginMapView() {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
+    // 获取最顶层的视图控制器
+    UIViewController *topViewController = nil;
+    
+    if (@available(iOS 13.0, *)) {
+        // iOS 13+ 使用windowScene的方式
+        NSSet<UIScene *> *connectedScenes = [UIApplication sharedApplication].connectedScenes;
+        for (UIScene *scene in connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                for (UIWindow *window in windowScene.windows) {
+                    if (window.isKeyWindow) {
+                        topViewController = window.rootViewController;
+                        break;
+                    }
+                }
+                if (topViewController) break;
+            }
         }
     }
     
-    UIViewController *rootVC = keyWindow.rootViewController;
-    
-    // 递归查找LocationMapViewController
-    __block BOOL found = NO;
-    
-    void (^findViewController)(UIViewController *) = ^(UIViewController *vc) {
-        if (found) return;
-        
-        if ([vc isKindOfClass:NSClassFromString(@"LocationMapViewController")]) {
-            found = YES;
-            return;
-        }
-        
-        if (vc.presentedViewController) {
-            findViewController(vc.presentedViewController);
-        }
-        
-        if ([vc isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *nav = (UINavigationController *)vc;
-            for (UIViewController *childVC in nav.viewControllers) {
-                findViewController(childVC);
-            }
-        }
-        
-        if ([vc isKindOfClass:[UITabBarController class]]) {
-            UITabBarController *tab = (UITabBarController *)vc;
-            for (UIViewController *childVC in tab.viewControllers) {
-                findViewController(childVC);
-            }
-        }
-    };
-    
-    if (rootVC) {
-        findViewController(rootVC);
+    // 如果没找到，使用旧的兼容方法
+    if (!topViewController) {
+        topViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
     }
     
-    return found;
+    // 查找模态视图控制器
+    while (topViewController.presentedViewController) {
+        topViewController = topViewController.presentedViewController;
+    }
+    
+    // 如果是导航控制器，获取其顶层视图控制器
+    if ([topViewController isKindOfClass:[UINavigationController class]]) {
+        topViewController = [(UINavigationController *)topViewController topViewController];
+    }
+    
+    // 判断当前顶层视图控制器是否是LocationMapViewController
+    return [topViewController isKindOfClass:NSClassFromString(@"LocationMapViewController")];
 }
 
 // MARK: - Hook CLLocationManager（在地图页面禁用虚拟定位）
