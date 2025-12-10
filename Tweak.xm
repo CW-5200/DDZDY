@@ -12,6 +12,17 @@ static NSString * const kFakeLocationEnabledKey = @"com.dd.virtual.location.enab
 static NSString * const kFakeLatitudeKey = @"com.dd.virtual.location.latitude";
 static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude";
 
+// MARK: - 微信类声明（需要在顶部声明）
+@interface MMLocationMgr : NSObject
+- (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3;
+- (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2;
+@end
+
+@interface WCLocationInfo : NSObject
+- (double)latitude;
+- (double)longitude;
+@end
+
 // MARK: - 位置管理器
 @interface DDLocationManager : NSObject
 + (instancetype)sharedManager;
@@ -70,6 +81,11 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
 }
 
 @end
+
+// MARK: - 设置变更回调函数声明
+static void handleSettingsChanged() {
+    [[DDLocationManager sharedManager] loadSettings];
+}
 
 // MARK: - Hook CLLocationManager
 %hook CLLocationManager
@@ -218,7 +234,7 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
 
 %end
 
-// MARK: - 地图选择视图控制器（保持不变）
+// MARK: - 地图选择视图控制器
 @interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
@@ -750,16 +766,22 @@ static NSString * const kFakeLongitudeKey = @"com.dd.virtual.location.longitude"
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         
-        // 注册插件到微信插件管理器
-        Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
-        if (pluginsMgrClass && [pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
-            [[objc_getClass("WCPluginsMgr") sharedInstance] registerControllerWithTitle:PLUGIN_NAME 
-                                                                               version:PLUGIN_VERSION 
-                                                                           controller:@"DDVirtualLocationSettingsViewController"];
+        // 注册插件到微信插件管理器 - 如果微信中有这个类就注册
+        Class pluginsMgrClass = objc_getClass("WCPluginsMgr");
+        if (pluginsMgrClass) {
+            // 尝试动态检查方法是否存在
+            if ([pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
+                id sharedInstance = [pluginsMgrClass performSelector:@selector(sharedInstance)];
+                if (sharedInstance && [sharedInstance respondsToSelector:@selector(registerControllerWithTitle:version:controller:)]) {
+                    [sharedInstance performSelector:@selector(registerControllerWithTitle:version:controller:) 
+                                         withObject:PLUGIN_NAME
+                                         withObject:PLUGIN_VERSION
+                                         withObject:@"DDVirtualLocationSettingsViewController"];
+                    NSLog(@"[DD虚拟定位] 已注册到微信插件管理器");
+                }
+            }
+        } else {
+            NSLog(@"[DD虚拟定位] 微信插件管理器类不存在，跳过注册");
         }
     }
-}
-
-static void handleSettingsChanged() {
-    [[DDLocationManager sharedManager] loadSettings];
 }
