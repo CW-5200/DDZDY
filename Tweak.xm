@@ -593,6 +593,38 @@ static NSString * const kGlobalFakeAccuracyKey = @"com.dd.global.virtual.locatio
 
 @end
 
+// MARK: - 定时器管理函数
+static void setupFakeLocationTimerForManager(CLLocationManager *manager) {
+    // 停止可能存在的旧定时器
+    dispatch_source_t oldTimer = objc_getAssociatedObject(manager, "fakeLocationTimer");
+    if (oldTimer) {
+        dispatch_source_cancel(oldTimer);
+    }
+
+    // 创建新定时器
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer,
+                           dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC),
+                           1.0 * NSEC_PER_SEC,  // 每1秒更新一次
+                           0.1 * NSEC_PER_SEC);
+
+    __weak CLLocationManager *weakManager = manager;
+    dispatch_source_set_event_handler(timer, ^{
+        __strong CLLocationManager *strongManager = weakManager;
+        if (strongManager && [[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
+            CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
+
+            if (strongManager.delegate && [strongManager.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
+                [strongManager.delegate locationManager:strongManager didUpdateLocations:@[fakeLocation]];
+            }
+        }
+    });
+
+    dispatch_resume(timer);
+    // 将定时器关联到manager对象
+    objc_setAssociatedObject(manager, "fakeLocationTimer", timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 // MARK: - Hook实现
 %hook CLLocationManager
 
@@ -611,50 +643,16 @@ static NSString * const kGlobalFakeAccuracyKey = @"com.dd.global.virtual.locatio
     if ([[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
         // 先立即发送一次位置更新
         CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
-        
+
         if (self.delegate && [self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
             [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
         }
-        
-        // 设置定时器持续发送位置更新
-        [self setupFakeLocationTimer];
+
+        // 设置定时器持续发送位置更新 - 使用外部函数
+        setupFakeLocationTimerForManager(self);
     } else {
         %orig;
     }
-}
-
-// 关键：设置定时器
-%new
-- (void)setupFakeLocationTimer {
-    // 停止可能存在的旧定时器
-    dispatch_source_t oldTimer = objc_getAssociatedObject(self, "fakeLocationTimer");
-    if (oldTimer) {
-        dispatch_source_cancel(oldTimer);
-    }
-    
-    // 创建新定时器
-    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(timer, 
-                           dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC), 
-                           1.0 * NSEC_PER_SEC,  // 每1秒更新一次
-                           0.1 * NSEC_PER_SEC);
-    
-    __weak typeof(self) weakSelf = self;
-    dispatch_source_set_event_handler(timer, ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (strongSelf && [[DDLocationManager sharedManager] isLocationSpoofingEnabled]) {
-            CLLocation *fakeLocation = [[DDLocationManager sharedManager] getFakeLocation];
-            
-            if (strongSelf.delegate && [strongSelf.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-                [strongSelf.delegate locationManager:strongSelf didUpdateLocations:@[fakeLocation]];
-            }
-        }
-    });
-    
-    dispatch_resume(timer);
-    
-    // 将定时器关联到对象
-    objc_setAssociatedObject(self, "fakeLocationTimer", timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // 关键：拦截stopUpdatingLocation
