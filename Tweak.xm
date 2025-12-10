@@ -67,6 +67,23 @@ static void loadLocationSettings() {
     }
 }
 
+// MARK: - 辅助函数
+static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
+    double latitude = getFakeLatitude();
+    double longitude = getFakeLongitude();
+    
+    if ([originalLocation isKindOfClass:[CLLocation class]]) {
+        CLLocation *orig = (CLLocation *)originalLocation;
+        return [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(latitude, longitude)
+                                            altitude:orig.altitude
+                                  horizontalAccuracy:orig.horizontalAccuracy
+                                    verticalAccuracy:orig.verticalAccuracy
+                                           timestamp:orig.timestamp];
+    } else {
+        return [[CLLocation alloc] initWithLatitude:latitude longitude:longitude];
+    }
+}
+
 // MARK: - 地图选择视图控制器
 @interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
@@ -554,30 +571,6 @@ static void loadLocationSettings() {
 }
 
 @end
-
-// MARK: - 辅助函数
-static NSDate *getLocationTimestamp(id locationObject) {
-    if ([locationObject respondsToSelector:@selector(timestamp)]) {
-        return [locationObject performSelector:@selector(timestamp)];
-    }
-    return [NSDate date];
-}
-
-static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
-    double latitude = getFakeLatitude();
-    double longitude = getFakeLongitude();
-    
-    if ([originalLocation isKindOfClass:[CLLocation class]]) {
-        CLLocation *orig = (CLLocation *)originalLocation;
-        return [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(latitude, longitude)
-                                            altitude:orig.altitude
-                                  horizontalAccuracy:orig.horizontalAccuracy
-                                    verticalAccuracy:orig.verticalAccuracy
-                                           timestamp:orig.timestamp];
-    } else {
-        return [[CLLocation alloc] initWithLatitude:latitude longitude:longitude];
-    }
-}
 
 // MARK: - Hook实现
 %hook MMLocationMgr
