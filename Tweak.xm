@@ -21,21 +21,11 @@ static double gFakeLongitude = 116.3976;
 @interface MMLocationMgr : NSObject
 - (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3;
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2;
-- (id)getLastLocationCache;
-- (id)getRealtimeLocationCache;
-- (void)updateLocationCache:(id)arg1 isMarsLocation:(_Bool)arg2;
-- (unsigned long long)updateAddressByLocation:(struct CLLocationCoordinate2D)arg1;
-- (id)getAddressByLocation:(struct CLLocationCoordinate2D)arg1;
 @end
 
 @interface WCLocationInfo : NSObject
 - (double)latitude;
 - (double)longitude;
-@end
-
-@interface WCLocationGetter : NSObject
-- (CLLocation *)location;
-- (CLLocationCoordinate2D)coordinate;
 @end
 
 // MARK: - 设置状态检查函数
@@ -64,23 +54,6 @@ static void loadLocationSettings() {
         [defaults setDouble:gFakeLatitude forKey:kFakeLatitudeKey];
         [defaults setDouble:gFakeLongitude forKey:kFakeLongitudeKey];
         [defaults synchronize];
-    }
-}
-
-// MARK: - 辅助函数
-static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
-    double latitude = getFakeLatitude();
-    double longitude = getFakeLongitude();
-    
-    if ([originalLocation isKindOfClass:[CLLocation class]]) {
-        CLLocation *orig = (CLLocation *)originalLocation;
-        return [[CLLocation alloc] initWithCoordinate:CLLocationCoordinate2DMake(latitude, longitude)
-                                            altitude:orig.altitude
-                                  horizontalAccuracy:orig.horizontalAccuracy
-                                    verticalAccuracy:orig.verticalAccuracy
-                                           timestamp:orig.timestamp];
-    } else {
-        return [[CLLocation alloc] initWithLatitude:latitude longitude:longitude];
     }
 }
 
@@ -429,18 +402,21 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
     self.title = PLUGIN_NAME;
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
-    
-    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = [UIColor systemBackgroundColor];
-    appearance.titleTextAttributes = @{
-        NSForegroundColorAttributeName: [UIColor labelColor],
-        NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]
-    };
-    
-    self.navigationController.navigationBar.standardAppearance = appearance;
-    self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    // iOS15+ 模态样式
+    if (@available(iOS 15.0, *)) {
+        self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
+        
+        UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+        [appearance configureWithOpaqueBackground];
+        appearance.backgroundColor = [UIColor systemBackgroundColor];
+        appearance.titleTextAttributes = @{
+            NSForegroundColorAttributeName: [UIColor labelColor],
+            NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]
+        };
+        
+        self.navigationController.navigationBar.standardAppearance = appearance;
+        self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    }
     
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -450,13 +426,14 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2;
+    return 2; // 开关和位置选择
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) {
-        return 1;
+        return 1; // 开关
     } else {
+        // 只有当开关开启时才显示位置选择
         return [[NSUserDefaults standardUserDefaults] boolForKey:kFakeLocationEnabledKey] ? 1 : 0;
     }
 }
@@ -538,15 +515,18 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
     LocationMapViewController *mapVC = [[LocationMapViewController alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mapVC];
     
+    // iOS15+ 模态样式
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     nav.sheetPresentationController.preferredCornerRadius = 16;
     
-    nav.sheetPresentationController.detents = @[
-        [UISheetPresentationControllerDetent mediumDetent],
-        [UISheetPresentationControllerDetent largeDetent]
-    ];
-    nav.sheetPresentationController.prefersGrabberVisible = YES;
-    nav.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
+    if (@available(iOS 16.0, *)) {
+        nav.sheetPresentationController.detents = @[
+            [UISheetPresentationControllerDetent mediumDetent],
+            [UISheetPresentationControllerDetent largeDetent]
+        ];
+        nav.sheetPresentationController.prefersGrabberVisible = YES;
+        nav.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
+    }
     
     __weak typeof(self) weakSelf = self;
     mapVC.completionHandler = ^(CLLocationCoordinate2D coordinate) {
@@ -561,8 +541,10 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
     [defaults setBool:sender.isOn forKey:kFakeLocationEnabledKey];
     [defaults synchronize];
     
+    // 刷新表格显示
     [self.tableView reloadData];
     
+    // 发送设置变更通知
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                         CFSTR("com.dd.virtual.location.settings_changed"),
                                         NULL,
@@ -574,10 +556,9 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
 
 // MARK: - Hook实现
 %hook MMLocationMgr
-
 - (void)locationManager:(id)arg1 didUpdateToLocation:(id)arg2 fromLocation:(id)arg3 {
     if (isFakeLocationEnabled()) {
-        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(arg2);
+        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getFakeLatitude() longitude:getFakeLongitude()];
         %orig(arg1, fakeLocation, arg3);
     } else {
         %orig(arg1, arg2, arg3);
@@ -586,71 +567,12 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
 
 - (void)locationManager:(id)arg1 didUpdateLocations:(NSArray *)arg2 {
     if (isFakeLocationEnabled()) {
-        CLLocation *originalLocation = arg2.firstObject;
-        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(originalLocation);
+        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getFakeLatitude() longitude:getFakeLongitude()];
         %orig(arg1, @[fakeLocation]);
     } else {
         %orig(arg1, arg2);
     }
 }
-
-- (id)getLastLocationCache {
-    if (isFakeLocationEnabled()) {
-        id fakeCache = %orig;
-        if (fakeCache) {
-            @try {
-                [fakeCache setValue:@(getFakeLatitude()) forKey:@"latitude"];
-                [fakeCache setValue:@(getFakeLongitude()) forKey:@"longitude"];
-            } @catch (NSException *exception) {
-                NSLog(@"DD虚拟定位: 设置位置缓存失败: %@", exception);
-            }
-        }
-        return fakeCache;
-    }
-    return %orig;
-}
-
-- (id)getRealtimeLocationCache {
-    if (isFakeLocationEnabled()) {
-        id fakeCache = %orig;
-        if (fakeCache) {
-            @try {
-                [fakeCache setValue:@(getFakeLatitude()) forKey:@"latitude"];
-                [fakeCache setValue:@(getFakeLongitude()) forKey:@"longitude"];
-            } @catch (NSException *exception) {
-                NSLog(@"DD虚拟定位: 设置实时位置缓存失败: %@", exception);
-            }
-        }
-        return fakeCache;
-    }
-    return %orig;
-}
-
-- (void)updateLocationCache:(id)arg1 isMarsLocation:(_Bool)arg2 {
-    if (isFakeLocationEnabled()) {
-        CLLocation *fakeLocation = createFakeLocationWithOriginalLocation(arg1);
-        %orig(fakeLocation, arg2);
-    } else {
-        %orig(arg1, arg2);
-    }
-}
-
-- (unsigned long long)updateAddressByLocation:(struct CLLocationCoordinate2D)arg1 {
-    if (isFakeLocationEnabled()) {
-        CLLocationCoordinate2D fakeCoord = CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude());
-        return %orig(fakeCoord);
-    }
-    return %orig(arg1);
-}
-
-- (id)getAddressByLocation:(struct CLLocationCoordinate2D)arg1 {
-    if (isFakeLocationEnabled()) {
-        CLLocationCoordinate2D fakeCoord = CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude());
-        return %orig(fakeCoord);
-    }
-    return %orig(arg1);
-}
-
 %end
 
 %hook WCLocationInfo
@@ -669,93 +591,6 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
 }
 %end
 
-%hook WCLocationGetter
-- (CLLocation *)location {
-    if (isFakeLocationEnabled()) {
-        CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getFakeLatitude() 
-                                                              longitude:getFakeLongitude()];
-        return fakeLocation;
-    }
-    return %orig;
-}
-
-- (CLLocationCoordinate2D)coordinate {
-    if (isFakeLocationEnabled()) {
-        return CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude());
-    }
-    return %orig;
-}
-%end
-
-%hook CLLocationManager
-- (void)startUpdatingLocation {
-    if (isFakeLocationEnabled()) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:getFakeLatitude() 
-                                                                  longitude:getFakeLongitude()];
-            
-            if ([self.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-                [self.delegate locationManager:self didUpdateLocations:@[fakeLocation]];
-            }
-        });
-    } else {
-        %orig;
-    }
-}
-
-- (CLLocation *)location {
-    if (isFakeLocationEnabled()) {
-        return [[CLLocation alloc] initWithLatitude:getFakeLatitude() 
-                                          longitude:getFakeLongitude()];
-    }
-    return %orig;
-}
-%end
-
-%hook CLLocation
-- (CLLocationCoordinate2D)coordinate {
-    if (isFakeLocationEnabled()) {
-        NSArray *callStackSymbols = [NSThread callStackSymbols];
-        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-        
-        if (![callStackString containsString:@"DD虚拟定位"] && 
-            ![callStackString containsString:@"DDVirtualLocation"] &&
-            ![callStackString containsString:@"DDGPS"]) {
-            return CLLocationCoordinate2DMake(getFakeLatitude(), getFakeLongitude());
-        }
-    }
-    return %orig;
-}
-
-- (double)latitude {
-    if (isFakeLocationEnabled()) {
-        NSArray *callStackSymbols = [NSThread callStackSymbols];
-        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-        
-        if (![callStackString containsString:@"DD虚拟定位"] && 
-            ![callStackString containsString:@"DDVirtualLocation"] &&
-            ![callStackString containsString:@"DDGPS"]) {
-            return getFakeLatitude();
-        }
-    }
-    return %orig;
-}
-
-- (double)longitude {
-    if (isFakeLocationEnabled()) {
-        NSArray *callStackSymbols = [NSThread callStackSymbols];
-        NSString *callStackString = [callStackSymbols componentsJoinedByString:@""];
-        
-        if (![callStackString containsString:@"DD虚拟定位"] && 
-            ![callStackString containsString:@"DDVirtualLocation"] &&
-            ![callStackString containsString:@"DDGPS"]) {
-            return getFakeLongitude();
-        }
-    }
-    return %orig;
-}
-%end
-
 // MARK: - 插件管理器注册
 @interface WCPluginsMgr : NSObject
 + (instancetype)sharedInstance;
@@ -766,6 +601,7 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
     @autoreleasepool {
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         
+        // 设置默认值
         if (![defaults objectForKey:kFakeLocationEnabledKey]) {
             [defaults setBool:NO forKey:kFakeLocationEnabledKey];
         }
@@ -777,8 +613,10 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
         
         [defaults synchronize];
         
+        // 加载设置
         loadLocationSettings();
         
+        // 监听设置变化
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         (CFNotificationCallback)loadLocationSettings,
@@ -786,6 +624,7 @@ static CLLocation *createFakeLocationWithOriginalLocation(id originalLocation) {
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         
+        // 注册插件到微信插件管理器
         Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
         if (pluginsMgrClass && [pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
             [[objc_getClass("WCPluginsMgr") sharedInstance] registerControllerWithTitle:PLUGIN_NAME 
