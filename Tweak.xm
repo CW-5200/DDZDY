@@ -12,96 +12,6 @@ static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled"
 static NSString * const kLatitudeKey = @"latitude";
 static NSString * const kLongitudeKey = @"longitude";
 
-// MARK: - 坐标转换工具
-@interface CoordinateConverter : NSObject
-+ (CLLocationCoordinate2D)wgs84ToGcj02:(CLLocationCoordinate2D)wgs84Coord;
-+ (CLLocationCoordinate2D)gcj02ToWgs84:(CLLocationCoordinate2D)gcj02Coord;
-+ (BOOL)isLocationOutOfChina:(CLLocationCoordinate2D)location;
-@end
-
-@implementation CoordinateConverter
-
-+ (CLLocationCoordinate2D)wgs84ToGcj02:(CLLocationCoordinate2D)wgs84Coord {
-    if ([self isLocationOutOfChina:wgs84Coord]) {
-        return wgs84Coord;
-    }
-    
-    double a = 6378245.0;
-    double ee = 0.00669342162296594323;
-    
-    double lat = wgs84Coord.latitude;
-    double lng = wgs84Coord.longitude;
-    
-    double dLat = [self transformLatWithX:lng - 105.0 y:lat - 35.0];
-    double dLng = [self transformLngWithX:lng - 105.0 y:lat - 35.0];
-    
-    double radLat = lat / 180.0 * M_PI;
-    double magic = sin(radLat);
-    magic = 1 - ee * magic * magic;
-    double sqrtMagic = sqrt(magic);
-    
-    dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * M_PI);
-    dLng = (dLng * 180.0) / (a / sqrtMagic * cos(radLat) * M_PI);
-    
-    return CLLocationCoordinate2DMake(lat + dLat, lng + dLng);
-}
-
-+ (CLLocationCoordinate2D)gcj02ToWgs84:(CLLocationCoordinate2D)gcj02Coord {
-    if ([self isLocationOutOfChina:gcj02Coord]) {
-        return gcj02Coord;
-    }
-    
-    double a = 6378245.0;
-    double ee = 0.00669342162296594323;
-    
-    double lat = gcj02Coord.latitude;
-    double lng = gcj02Coord.longitude;
-    
-    double dLat = [self transformLatWithX:lng - 105.0 y:lat - 35.0];
-    double dLng = [self transformLngWithX:lng - 105.0 y:lat - 35.0];
-    
-    double radLat = lat / 180.0 * M_PI;
-    double magic = sin(radLat);
-    magic = 1 - ee * magic * magic;
-    double sqrtMagic = sqrt(magic);
-    
-    dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * M_PI);
-    dLng = (dLng * 180.0) / (a / sqrtMagic * cos(radLat) * M_PI);
-    
-    double mgLat = lat + dLat;
-    double mgLng = lng + dLng;
-    
-    return CLLocationCoordinate2DMake(lat * 2 - mgLat, lng * 2 - mgLng);
-}
-
-+ (double)transformLatWithX:(double)x y:(double)y {
-    double ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * sqrt(fabs(x));
-    ret += (20.0 * sin(6.0 * x * M_PI) + 20.0 * sin(2.0 * x * M_PI)) * 2.0 / 3.0;
-    ret += (20.0 * sin(y * M_PI) + 40.0 * sin(y / 3.0 * M_PI)) * 2.0 / 3.0;
-    ret += (160.0 * sin(y / 12.0 * M_PI) + 320 * sin(y * M_PI / 30.0)) * 2.0 / 3.0;
-    return ret;
-}
-
-+ (double)transformLngWithX:(double)x y:(double)y {
-    double ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * sqrt(fabs(x));
-    ret += (20.0 * sin(6.0 * x * M_PI) + 20.0 * sin(2.0 * x * M_PI)) * 2.0 / 3.0;
-    ret += (20.0 * sin(x * M_PI) + 40.0 * sin(x / 3.0 * M_PI)) * 2.0 / 3.0;
-    ret += (150.0 * sin(x / 12.0 * M_PI) + 300.0 * sin(x / 30.0 * M_PI)) * 2.0 / 3.0;
-    return ret;
-}
-
-+ (BOOL)isLocationOutOfChina:(CLLocationCoordinate2D)location {
-    if (location.longitude < 72.004 || location.longitude > 137.8347) {
-        return YES;
-    }
-    if (location.latitude < 0.8293 || location.latitude > 55.8271) {
-        return YES;
-    }
-    return NO;
-}
-
-@end
-
 // MARK: - 插件管理器接口声明
 @interface WCPluginsMgr : NSObject
 + (instancetype)sharedInstance;
@@ -417,28 +327,24 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.view addSubview:self.mapView];
     self.mapView.translatesAutoresizingMaskIntoConstraints = NO;
     
+    // 修复地图约束，确保用户位置能够居中显示
     [NSLayoutConstraint activateConstraints:@[
         [self.mapView.topAnchor constraintEqualToAnchor:self.searchBar.bottomAnchor constant:16],
-        [self.mapView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [self.mapView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [self.mapView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.mapView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.mapView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-40]
     ]];
     
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
-    // 加载当前设置的虚拟位置
-    CLLocationCoordinate2D currentCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
+    CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
                                                                      [WeChatLocationManager sharedManager].longitude);
-    
-    // 将存储的WGS-84坐标转换为GCJ-02用于地图显示
-    CLLocationCoordinate2D mapCoord = [CoordinateConverter wgs84ToGcj02:currentCoord];
-    
-    MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(mapCoord, 1000, 1000);
+    MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
     [self.mapView setRegion:region animated:YES];
     
     MKPointAnnotation *existingAnnotation = [[MKPointAnnotation alloc] init];
-    existingAnnotation.coordinate = mapCoord;
+    existingAnnotation.coordinate = initialCoord;
     existingAnnotation.title = @"虚拟位置";
     [self.mapView addAnnotation:existingAnnotation];
 }
@@ -465,8 +371,8 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.mapView addSubview:self.locateMeButton];
     
     [NSLayoutConstraint activateConstraints:@[
-        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-16],
-        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-16],
+        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-20],
+        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-20],
         [self.locateMeButton.widthAnchor constraintEqualToConstant:40],
         [self.locateMeButton.heightAnchor constraintEqualToConstant:40]
     ]];
@@ -516,14 +422,11 @@ static NSString * const kLongitudeKey = @"longitude";
         CGPoint touchPoint = [gesture locationInView:self.mapView];
         CLLocationCoordinate2D coordinate = [self.mapView convertPoint:touchPoint toCoordinateFromView:self.mapView];
         
-        // 地图返回的是GCJ-02坐标，需要转换为WGS-84坐标存储
-        CLLocationCoordinate2D wgs84Coord = [CoordinateConverter gcj02ToWgs84:coordinate];
-        
         MKPointAnnotation *annotation = [[MKPointAnnotation alloc] init];
-        annotation.coordinate = coordinate; // 地图上显示GCJ-02坐标
+        annotation.coordinate = coordinate;
         annotation.title = @"选择的位置";
         
-        CLLocation *location = [[CLLocation alloc] initWithLatitude:wgs84Coord.latitude longitude:wgs84Coord.longitude];
+        CLLocation *location = [[CLLocation alloc] initWithLatitude:coordinate.latitude longitude:coordinate.longitude];
         [self.geocoder reverseGeocodeLocation:location completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
             if (!error && placemarks.count > 0) {
                 CLPlacemark *placemark = placemarks.firstObject;
@@ -576,17 +479,14 @@ static NSString * const kLongitudeKey = @"longitude";
     if (selectedAnnotation) {
         CLLocationCoordinate2D coordinate = selectedAnnotation.coordinate;
         
-        // 地图返回的是GCJ-02坐标，需要转换为WGS-84坐标存储
-        CLLocationCoordinate2D wgs84Coord = [CoordinateConverter gcj02ToWgs84:coordinate];
-        
-        [[WeChatLocationManager sharedManager] setLocationWithLatitude:wgs84Coord.latitude 
-                                                             longitude:wgs84Coord.longitude];
+        [[WeChatLocationManager sharedManager] setLocationWithLatitude:coordinate.latitude 
+                                                             longitude:coordinate.longitude];
         
         UINotificationFeedbackGenerator *feedback = [[UINotificationFeedbackGenerator alloc] init];
         [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
         
         if (self.completionHandler) {
-            self.completionHandler(wgs84Coord);
+            self.completionHandler(coordinate);
         }
         
         [self.navigationController dismissViewControllerAnimated:YES completion:^{
@@ -671,10 +571,7 @@ static NSString * const kLongitudeKey = @"longitude";
         
         if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
             CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(lat, lng);
-            
-            // 假设用户输入的是WGS-84坐标，转换为GCJ-02用于地图显示
-            CLLocationCoordinate2D mapCoord = [CoordinateConverter wgs84ToGcj02:coordinate];
-            [self addSelectedAnnotationAtCoordinate:mapCoord withSubtitle:searchText];
+            [self addSelectedAnnotationAtCoordinate:coordinate withSubtitle:searchText];
             return;
         }
     }
@@ -687,10 +584,7 @@ static NSString * const kLongitudeKey = @"longitude";
         
         if (placemarks.count > 0) {
             CLPlacemark *placemark = placemarks.firstObject;
-            // 地理编码返回的是WGS-84坐标，转换为GCJ-02用于地图显示
-            CLLocationCoordinate2D wgs84Coord = placemark.location.coordinate;
-            CLLocationCoordinate2D mapCoord = [CoordinateConverter wgs84ToGcj02:wgs84Coord];
-            [self addSelectedAnnotationAtCoordinate:mapCoord withSubtitle:[self formatPlacemarkAddress:placemark]];
+            [self addSelectedAnnotationAtCoordinate:placemark.location.coordinate withSubtitle:[self formatPlacemarkAddress:placemark]];
         }
     }];
 }
@@ -724,7 +618,10 @@ static NSString * const kLongitudeKey = @"longitude";
         self.isUsingRealLocation = NO;
         
         if (self.isFollowingUserLocation) {
-            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
+            // 创建一个以用户位置为中心的可见区域
+            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 200, 200);
+            
+            // 设置地图区域，确保用户位置在地图中心
             [self.mapView setRegion:region animated:YES];
         }
         
