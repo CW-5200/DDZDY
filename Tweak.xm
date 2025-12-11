@@ -174,7 +174,7 @@ static NSString * const kLongitudeKey = @"longitude";
     }
 }
 
- - (void)disableTemporaryDisable {
+- (void)disableTemporaryDisable {
     if (self.temporarilyDisabled) {
         self.temporarilyDisabled = NO;
         NSLog(@"[DDGPS] 已恢复虚拟定位，恢复状态: %d", self.originalEnabledState);
@@ -198,6 +198,7 @@ static NSString * const kLongitudeKey = @"longitude";
 // 添加位置管理器用于在地图界面中使用真实位置
 @property (strong, nonatomic) CLLocationManager *locationManager;
 @property (assign, nonatomic) BOOL isUsingRealLocation;
+@property (assign, nonatomic) BOOL isFollowingUserLocation;
 @property (strong, nonatomic) UIButton *locateMeButton; // 定位按钮
 @end
 
@@ -223,6 +224,7 @@ static NSString * const kLongitudeKey = @"longitude";
     self.locationManager = [[CLLocationManager alloc] init];
     self.locationManager.delegate = self;
     self.isUsingRealLocation = NO;
+    self.isFollowingUserLocation = NO;
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -236,6 +238,7 @@ static NSString * const kLongitudeKey = @"longitude";
         [self.locationManager stopUpdatingLocation];
         self.isUsingRealLocation = NO;
         self.mapView.showsUserLocation = NO;
+        self.isFollowingUserLocation = NO;
     }
 }
 
@@ -369,15 +372,15 @@ static NSString * const kLongitudeKey = @"longitude";
     // 设置按钮样式 - 大小为40x40
     self.locateMeButton.backgroundColor = [UIColor systemBackgroundColor];
     self.locateMeButton.tintColor = [UIColor systemBlueColor];
-    self.locateMeButton.layer.cornerRadius = 20; // 圆形按钮，直径40，半径为20
+    self.locateMeButton.layer.cornerRadius = 20; // 圆形按钮，直径40
     self.locateMeButton.layer.shadowColor = [UIColor blackColor].CGColor;
     self.locateMeButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self.locateMeButton.layer.shadowRadius = 4;
-    self.locateMeButton.layer.shadowOpacity = 0.3;
+    self.locateMeButton.layer.shadowRadius = 3;
+    self.locateMeButton.layer.shadowOpacity = 0.2;
     self.locateMeButton.layer.masksToBounds = NO;
     
-    // 设置图标 - 根据按钮大小调整图标
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightMedium];
+    // 设置图标 - 大小为15
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
     UIImage *locationIcon = [UIImage systemImageNamed:@"location.fill" withConfiguration:config];
     [self.locateMeButton setImage:locationIcon forState:UIControlStateNormal];
     
@@ -412,6 +415,7 @@ static NSString * const kLongitudeKey = @"longitude";
         [self.locationManager startUpdatingLocation];
         self.isUsingRealLocation = YES;
         self.mapView.showsUserLocation = YES;
+        self.isFollowingUserLocation = YES;
         
         // 禁用定位按钮，防止重复点击
         self.locateMeButton.enabled = NO;
@@ -466,6 +470,9 @@ static NSString * const kLongitudeKey = @"longitude";
         MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(coordinate, 500, 500);
         [self.mapView setRegion:region animated:YES];
         [self.mapView selectAnnotation:annotation animated:YES];
+        
+        // 用户手动操作时停止跟随
+        self.isFollowingUserLocation = NO;
     }
 }
 
@@ -540,10 +547,7 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (MKAnnotationView *)mapView:(MKMapView *)mapView viewForAnnotation:(id<MKAnnotation>)annotation {
-    if ([annotation isKindOfClass:[MKUserLocation class]]) {
-        // 返回nil使用系统默认的用户位置蓝点
-        return nil;
-    }
+    if ([annotation isKindOfClass:[MKUserLocation class]]) return nil;
     
     static NSString *annotationId = @"customAnnotation";
     MKMarkerAnnotationView *markerView = (MKMarkerAnnotationView *)[mapView dequeueReusableAnnotationViewWithIdentifier:annotationId];
@@ -642,43 +646,11 @@ static NSString * const kLongitudeKey = @"longitude";
         [manager stopUpdatingLocation];
         self.isUsingRealLocation = NO;
         
-        // 将地图中心移动到真实位置
-        MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
-        [self.mapView setRegion:region animated:YES];
-        
-        // 移除之前添加的"真实位置"标注
-        NSMutableArray *annotationsToRemove = [NSMutableArray array];
-        for (id<MKAnnotation> existingAnnotation in self.mapView.annotations) {
-            if ([existingAnnotation.title isEqualToString:@"真实位置"] || 
-                [existingAnnotation.title isEqualToString:@"选择的位置"]) {
-                [annotationsToRemove addObject:existingAnnotation];
-            }
+        if (self.isFollowingUserLocation) {
+            // 将地图中心移动到真实位置（跟随蓝点）
+            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
+            [self.mapView setRegion:region animated:YES];
         }
-        [self.mapView removeAnnotations:annotationsToRemove];
-        
-        // 创建一个新的标注，确保位置精确
-        MKPointAnnotation *annotation = [[MKPointAnnotation alloc] init];
-        annotation.coordinate = currentLocation.coordinate;
-        annotation.title = @"真实位置";
-        
-        // 进行反向地理编码获取地址
-        [self.geocoder reverseGeocodeLocation:currentLocation completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
-            if (!error && placemarks.count > 0) {
-                CLPlacemark *placemark = placemarks.firstObject;
-                NSString *address = [self formatPlacemarkAddress:placemark];
-                annotation.subtitle = address;
-                self.searchBar.text = address;
-            } else {
-                annotation.subtitle = [NSString stringWithFormat:@"%.6f, %.6f", 
-                                      currentLocation.coordinate.latitude, 
-                                      currentLocation.coordinate.longitude];
-                self.searchBar.text = [NSString stringWithFormat:@"%.6f, %.6f", 
-                                      currentLocation.coordinate.latitude, 
-                                      currentLocation.coordinate.longitude];
-            }
-            [self.mapView addAnnotation:annotation];
-            [self.mapView selectAnnotation:annotation animated:YES];
-        }];
         
         // 重新启用定位按钮
         self.locateMeButton.enabled = YES;
@@ -692,11 +664,11 @@ static NSString * const kLongitudeKey = @"longitude";
         [manager startUpdatingLocation];
         self.isUsingRealLocation = YES;
         self.mapView.showsUserLocation = YES;
+        self.isFollowingUserLocation = YES;
     } else if (status == kCLAuthorizationStatusDenied || status == kCLAuthorizationStatusRestricted) {
         // 权限被拒绝，重新启用按钮
         self.locateMeButton.enabled = YES;
         self.locateMeButton.alpha = 1.0;
-        [self showAlertWithTitle:@"定位权限" message:@"请前往设置-隐私-定位服务中开启微信的定位权限" showSettingsButton:YES];
     }
 }
 
@@ -706,19 +678,19 @@ static NSString * const kLongitudeKey = @"longitude";
         [manager stopUpdatingLocation];
         self.isUsingRealLocation = NO;
         self.mapView.showsUserLocation = NO;
+        self.isFollowingUserLocation = NO;
         
         // 重新启用按钮
         self.locateMeButton.enabled = YES;
         self.locateMeButton.alpha = 1.0;
-        
-        [self showAlertWithTitle:@"定位失败" message:@"定位服务被拒绝，请检查定位权限设置" showSettingsButton:YES];
-    } else if (error.code == kCLErrorLocationUnknown) {
-        // 暂时无法获取位置
-        [self showAlertWithTitle:@"定位失败" message:@"暂时无法获取您的位置，请稍后重试" showSettingsButton:NO];
-        
-        // 重新启用按钮
-        self.locateMeButton.enabled = YES;
-        self.locateMeButton.alpha = 1.0;
+    }
+}
+
+#pragma mark - MKMapViewDelegate
+- (void)mapView:(MKMapView *)mapView regionDidChangeAnimated:(BOOL)animated {
+    // 当用户手动拖动地图时，停止跟随用户位置
+    if (self.isFollowingUserLocation && animated) {
+        self.isFollowingUserLocation = NO;
     }
 }
 
@@ -829,7 +801,6 @@ static NSString * const kLongitudeKey = @"longitude";
     }
 }
 
-// 修复：将 NSInteger 改为 NSIndexPath *
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     return 55.0;
 }
