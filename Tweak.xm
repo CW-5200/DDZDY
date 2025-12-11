@@ -317,6 +317,9 @@ static NSString * const kLongitudeKey = @"longitude";
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
     
+    // 设置边距，确保地图居中显示
+    self.mapView.layoutMargins = UIEdgeInsetsMake(0, 16, 0, 16);
+    
     self.mapView.showsUserLocation = NO;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
@@ -327,11 +330,10 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.view addSubview:self.mapView];
     self.mapView.translatesAutoresizingMaskIntoConstraints = NO;
     
-    // 修复地图约束，确保用户位置能够居中显示
     [NSLayoutConstraint activateConstraints:@[
         [self.mapView.topAnchor constraintEqualToAnchor:self.searchBar.bottomAnchor constant:16],
-        [self.mapView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.mapView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.mapView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.mapView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
         [self.mapView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-40]
     ]];
     
@@ -371,8 +373,8 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.mapView addSubview:self.locateMeButton];
     
     [NSLayoutConstraint activateConstraints:@[
-        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-20],
-        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-20],
+        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-16],
+        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-16],
         [self.locateMeButton.widthAnchor constraintEqualToConstant:40],
         [self.locateMeButton.heightAnchor constraintEqualToConstant:40]
     ]];
@@ -618,10 +620,13 @@ static NSString * const kLongitudeKey = @"longitude";
         self.isUsingRealLocation = NO;
         
         if (self.isFollowingUserLocation) {
-            // 创建一个以用户位置为中心的可见区域
-            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 200, 200);
+            // 修正：设置地图边距，确保用户位置在可视区域中心
+            [self.mapView setCenterCoordinate:currentLocation.coordinate animated:YES];
             
-            // 设置地图区域，确保用户位置在地图中心
+            // 设置地图区域，考虑地图视图的边距
+            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
+            
+            // 使用setRegion:edgePadding:来确保地图区域完全可见
             [self.mapView setRegion:region animated:YES];
         }
         
