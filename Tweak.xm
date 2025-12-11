@@ -174,7 +174,7 @@ static NSString * const kLongitudeKey = @"longitude";
     }
 }
 
-- (void)disableTemporaryDisable {
+ - (void)disableTemporaryDisable {
     if (self.temporarilyDisabled) {
         self.temporarilyDisabled = NO;
         NSLog(@"[DDGPS] 已恢复虚拟定位，恢复状态: %d", self.originalEnabledState);
@@ -829,7 +829,8 @@ static NSString * const kLongitudeKey = @"longitude";
     }
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSInteger)indexPath {
+// 修复：将 NSInteger 改为 NSIndexPath *
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     return 55.0;
 }
 
