@@ -5,7 +5,7 @@
 #import <MapKit/MapKit.h>
 
 #define PLUGIN_NAME @"DD虚拟定位"
-#define PLUGIN_VERSION @"1.0.0"
+#define PLUGIN_VERSION @"1.0.4"
 
 // MARK: - 设置键名
 static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled";
@@ -36,7 +36,7 @@ static NSString * const kLongitudeKey = @"longitude";
 // 临时禁用/恢复方法
 - (void)enableTemporaryDisable;
 - (void)disableTemporaryDisable;
-- (BOOL)isVirtualLocationEnabled; // 判断是否应该启用虚拟定位
+- (BOOL)isVirtualLocationEnabled;
 @end
 
 @implementation WeChatLocationManager
@@ -88,17 +88,12 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (CLLocation *)getCurrentFakeLocation {
-    // 如果临时禁用，返回nil
     if (self.temporarilyDisabled) {
         return nil;
     }
     
-    // 添加微小随机偏移增加真实性
-    double latOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
-    double lngOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
-    
     CLLocation *fakeLocation = [[CLLocation alloc]
-        initWithCoordinate:CLLocationCoordinate2DMake(_latitude + latOffset, _longitude + lngOffset)
+        initWithCoordinate:CLLocationCoordinate2DMake(_latitude, _longitude)
         altitude:0
         horizontalAccuracy:5.0
         verticalAccuracy:3.0
@@ -118,7 +113,6 @@ static NSString * const kLongitudeKey = @"longitude";
     NSLog(@"[DDGPS] 启动虚拟位置更新定时器");
     _isTimerActive = YES;
     
-    // 立即发送一次虚拟位置
     dispatch_async(dispatch_get_main_queue(), ^{
         CLLocation *fakeLocation = [self getCurrentFakeLocation];
         if (fakeLocation && manager.delegate && [manager.delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
@@ -126,7 +120,6 @@ static NSString * const kLongitudeKey = @"longitude";
         }
     });
     
-    // 创建定时器
     _locationUpdateTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     dispatch_source_set_timer(_locationUpdateTimer,
                              dispatch_time(DISPATCH_TIME_NOW, 1.0 * NSEC_PER_SEC),
@@ -146,7 +139,6 @@ static NSString * const kLongitudeKey = @"longitude";
                 [strongManager.delegate locationManager:strongManager didUpdateLocations:@[fakeLocation]];
             }
         } else {
-            // 如果虚拟定位已禁用，停止定时器
             [strongSelf stopFakeLocationUpdates];
         }
     });
@@ -182,7 +174,6 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (BOOL)isVirtualLocationEnabled {
-    // 如果临时禁用，返回NO；否则返回实际启用状态
     return !self.temporarilyDisabled && self.isEnabled;
 }
 
@@ -209,7 +200,6 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = @"选择位置";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
-    // 在地图界面中临时禁用虚拟定位
     [[WeChatLocationManager sharedManager] enableTemporaryDisable];
     
     [self setupNavigationBar];
@@ -227,10 +217,8 @@ static NSString * const kLongitudeKey = @"longitude";
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     
-    // 离开地图界面时恢复虚拟定位设置
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
     
-    // 停止真实位置更新
     if (self.isUsingRealLocation) {
         [self.locationManager stopUpdatingLocation];
         self.isUsingRealLocation = NO;
@@ -240,7 +228,6 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (void)dealloc {
-    // 确保恢复虚拟定位
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
 }
 
