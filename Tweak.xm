@@ -12,21 +12,25 @@ static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled"
 static NSString * const kLatitudeKey = @"latitude";
 static NSString * const kLongitudeKey = @"longitude";
 
-// MARK: - WeChatLocationManager 类
+// MARK: - 全局位置管理器
 @interface WeChatLocationManager : NSObject
 + (instancetype)sharedManager;
 @property (nonatomic, assign) BOOL isEnabled;
 @property (nonatomic, assign) double latitude;
 @property (nonatomic, assign) double longitude;
+
+// 临时禁用功能
 @property (nonatomic, assign) BOOL temporarilyDisabled;
 @property (nonatomic, assign) BOOL originalEnabledState;
 
 - (CLLocation *)getCurrentFakeLocation;
 - (void)setLocationWithLatitude:(double)lat longitude:(double)lng;
 - (void)loadSettings;
+
+// 临时禁用/恢复方法
 - (void)enableTemporaryDisable;
 - (void)disableTemporaryDisable;
-- (BOOL)isVirtualLocationEnabled;
+- (BOOL)isVirtualLocationEnabled; // 判断是否应该启用虚拟定位
 @end
 
 @implementation WeChatLocationManager
@@ -73,12 +77,17 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (CLLocation *)getCurrentFakeLocation {
+    // 如果临时禁用，返回nil
     if (self.temporarilyDisabled) {
         return nil;
     }
     
+    // 添加微小随机偏移增加真实性
+    double latOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
+    double lngOffset = ((double)arc4random() / UINT32_MAX - 0.5) * 0.0001;
+    
     CLLocation *fakeLocation = [[CLLocation alloc]
-        initWithCoordinate:CLLocationCoordinate2DMake(_latitude, _longitude)
+        initWithCoordinate:CLLocationCoordinate2DMake(_latitude + latOffset, _longitude + lngOffset)
         altitude:0
         horizontalAccuracy:5.0
         verticalAccuracy:3.0
@@ -89,6 +98,7 @@ static NSString * const kLongitudeKey = @"longitude";
     return fakeLocation;
 }
 
+// MARK: - 临时禁用功能实现
 - (void)enableTemporaryDisable {
     if (!self.temporarilyDisabled) {
         self.originalEnabledState = self.isEnabled;
@@ -105,12 +115,13 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (BOOL)isVirtualLocationEnabled {
+    // 如果临时禁用，返回NO；否则返回实际启用状态
     return !self.temporarilyDisabled && self.isEnabled;
 }
 
 @end
 
-// MARK: - LocationMapViewController 类
+// MARK: - 地图选择视图控制器（已移除获取真实位置功能）
 @interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
@@ -126,6 +137,7 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = @"选择位置";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
+    // 在地图界面中临时禁用虚拟定位
     [[WeChatLocationManager sharedManager] enableTemporaryDisable];
     
     [self setupNavigationBar];
@@ -137,10 +149,13 @@ static NSString * const kLongitudeKey = @"longitude";
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    
+    // 离开地图界面时恢复虚拟定位设置
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
 }
 
 - (void)dealloc {
+    // 确保恢复虚拟定位
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
 }
 
@@ -228,6 +243,7 @@ static NSString * const kLongitudeKey = @"longitude";
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
     
+    // 关键：不显示用户位置，不自动定位
     self.mapView.showsUserLocation = NO;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
@@ -248,6 +264,7 @@ static NSString * const kLongitudeKey = @"longitude";
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
+    // 使用虚拟位置作为初始位置，但不使用定位服务
     CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
                                                                      [WeChatLocationManager sharedManager].longitude);
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
@@ -419,6 +436,7 @@ static NSString * const kLongitudeKey = @"longitude";
         }
     }
     
+    // 由于虚拟定位已临时禁用，地理编码器可以正常工作
     [self.geocoder geocodeAddressString:searchText completionHandler:^(NSArray<CLPlacemark *> *placemarks, NSError *error) {
         if (error) {
             [self showAlertWithTitle:@"搜索失败" message:@"未找到该地点，请尝试输入坐标格式：纬度,经度"];
@@ -452,31 +470,9 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.mapView selectAnnotation:annotation animated:YES];
 }
 
-- (void)showMapSelection {
-    LocationMapViewController *mapVC = [[LocationMapViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mapVC];
-    
-    nav.modalPresentationStyle = UIModalPresentationPageSheet;
-    nav.sheetPresentationController.preferredCornerRadius = 16;
-    
-    nav.sheetPresentationController.detents = @[
-        [UISheetPresentationControllerDetent mediumDetent],
-        [UISheetPresentationControllerDetent largeDetent]
-    ];
-    nav.sheetPresentationController.prefersGrabberVisible = YES;
-    nav.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
-    
-    __weak typeof(self) weakSelf = self;
-    mapVC.completionHandler = ^(CLLocationCoordinate2D coordinate) {
-        [weakSelf.tableView reloadData];
-    };
-    
-    [self presentViewController:nav animated:YES completion:nil];
-}
-
 @end
 
-// MARK: - DDVirtualLocationSettingsViewController 类
+// MARK: - 设置视图控制器
 @interface DDVirtualLocationSettingsViewController : UIViewController <UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, strong) UITableView *tableView;
 @end
@@ -488,18 +484,20 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = PLUGIN_NAME;
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
-    
-    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = [UIColor systemBackgroundColor];
-    appearance.titleTextAttributes = @{
-        NSForegroundColorAttributeName: [UIColor labelColor],
-        NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]
-    };
-    
-    self.navigationController.navigationBar.standardAppearance = appearance;
-    self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    if (@available(iOS 15.0, *)) {
+        self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAutomatic;
+        
+        UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+        [appearance configureWithOpaqueBackground];
+        appearance.backgroundColor = [UIColor systemBackgroundColor];
+        appearance.titleTextAttributes = @{
+            NSForegroundColorAttributeName: [UIColor labelColor],
+            NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold]
+        };
+        
+        self.navigationController.navigationBar.standardAppearance = appearance;
+        self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    }
     
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -587,26 +585,32 @@ static NSString * const kLongitudeKey = @"longitude";
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
     if (indexPath.section == 1 && indexPath.row == 0) {
-        LocationMapViewController *mapVC = [[LocationMapViewController alloc] init];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mapVC];
-        
-        nav.modalPresentationStyle = UIModalPresentationPageSheet;
-        nav.sheetPresentationController.preferredCornerRadius = 16;
-        
+        [self showMapSelection];
+    }
+}
+
+- (void)showMapSelection {
+    LocationMapViewController *mapVC = [[LocationMapViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:mapVC];
+    
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    nav.sheetPresentationController.preferredCornerRadius = 16;
+    
+    if (@available(iOS 16.0, *)) {
         nav.sheetPresentationController.detents = @[
             [UISheetPresentationControllerDetent mediumDetent],
             [UISheetPresentationControllerDetent largeDetent]
         ];
         nav.sheetPresentationController.prefersGrabberVisible = YES;
         nav.sheetPresentationController.prefersScrollingExpandsWhenScrolledToEdge = NO;
-        
-        __weak typeof(self) weakSelf = self;
-        mapVC.completionHandler = ^(CLLocationCoordinate2D coordinate) {
-            [weakSelf.tableView reloadData];
-        };
-        
-        [self presentViewController:nav animated:YES completion:nil];
     }
+    
+    __weak typeof(self) weakSelf = self;
+    mapVC.completionHandler = ^(CLLocationCoordinate2D coordinate) {
+        [weakSelf.tableView reloadData];
+    };
+    
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)fakeLocationEnabledChanged:(UISwitch *)sender {
@@ -626,10 +630,11 @@ static NSString * const kLongitudeKey = @"longitude";
 
 @end
 
-// MARK: - Hook CLLocationManager 类
+// MARK: - Hook CLLocationManager
 %hook CLLocationManager
 
 - (void)startUpdatingLocation {
+    // 使用新的判断方法，考虑临时禁用状态
     if ([[WeChatLocationManager sharedManager] isVirtualLocationEnabled]) {
         NSLog(@"[DDGPS] 拦截位置更新请求（虚拟定位启用）");
         
@@ -641,6 +646,7 @@ static NSString * const kLongitudeKey = @"longitude";
             }
         });
         
+        // 设置定时器持续发送虚拟位置
         static dispatch_source_t locationTimer;
         if (locationTimer) {
             dispatch_source_cancel(locationTimer);
@@ -667,7 +673,7 @@ static NSString * const kLongitudeKey = @"longitude";
         dispatch_resume(locationTimer);
     } else {
         NSLog(@"[DDGPS] 允许真实位置更新（虚拟定位临时禁用或未启用）");
-        %orig;
+        %orig; // 调用原始方法，获取真实位置
     }
 }
 
@@ -685,7 +691,7 @@ static NSString * const kLongitudeKey = @"longitude";
 
 %end
 
-// MARK: - Hook CLLocation 类
+// MARK: - Hook CLLocation（补充位置信息）
 %hook CLLocation
 
 - (CLLocationCoordinate2D)coordinate {
@@ -707,11 +713,12 @@ static NSString * const kLongitudeKey = @"longitude";
 
 %end
 
-// MARK: - 插件初始化
+// MARK: - 静态回调函数声明
 static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     [[WeChatLocationManager sharedManager] loadSettings];
 }
 
+// MARK: - 插件管理器注册
 @interface WCPluginsMgr : NSObject
 + (instancetype)sharedInstance;
 - (void)registerControllerWithTitle:(NSString *)title version:(NSString *)version controller:(NSString *)controller;
@@ -721,6 +728,7 @@ static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *o
     @autoreleasepool {
         NSLog(@"[DDGPS] 虚拟定位插件已加载 v%@", PLUGIN_VERSION);
         
+        // 初始化默认设置
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         
         if (![defaults objectForKey:kLocationSpoofingEnabledKey]) {
@@ -736,6 +744,7 @@ static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *o
         
         [[WeChatLocationManager sharedManager] loadSettings];
         
+        // 监听设置变化
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         loadLocationSettingsCallback,
@@ -743,6 +752,7 @@ static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *o
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         
+        // 注册插件到微信插件管理器
         Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
         if (pluginsMgrClass && [pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
             [[objc_getClass("WCPluginsMgr") sharedInstance] registerControllerWithTitle:PLUGIN_NAME 
