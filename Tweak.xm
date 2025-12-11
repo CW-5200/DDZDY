@@ -5,7 +5,7 @@
 #import <MapKit/MapKit.h>
 
 #define PLUGIN_NAME @"DD虚拟定位"
-#define PLUGIN_VERSION @"1.0.4"
+#define PLUGIN_VERSION @"1.0.0"
 
 // MARK: - 设置键名
 static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled";
@@ -317,9 +317,6 @@ static NSString * const kLongitudeKey = @"longitude";
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
     
-    // 设置边距，确保地图居中显示
-    self.mapView.layoutMargins = UIEdgeInsetsMake(0, 16, 0, 16);
-    
     self.mapView.showsUserLocation = NO;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
@@ -620,13 +617,7 @@ static NSString * const kLongitudeKey = @"longitude";
         self.isUsingRealLocation = NO;
         
         if (self.isFollowingUserLocation) {
-            // 修正：设置地图边距，确保用户位置在可视区域中心
-            [self.mapView setCenterCoordinate:currentLocation.coordinate animated:YES];
-            
-            // 设置地图区域，考虑地图视图的边距
-            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
-            
-            // 使用setRegion:edgePadding:来确保地图区域完全可见
+            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 1500, 1500);
             [self.mapView setRegion:region animated:YES];
         }
         
