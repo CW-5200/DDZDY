@@ -182,16 +182,11 @@ static NSString * const kLongitudeKey = @"longitude";
 @end
 
 // MARK: - 地图选择视图控制器
-@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate, CLLocationManagerDelegate>
+@interface LocationMapViewController : UIViewController <UISearchBarDelegate, MKMapViewDelegate>
 @property (strong, nonatomic) MKMapView *mapView;
 @property (strong, nonatomic) UISearchBar *searchBar;
 @property (strong, nonatomic) CLGeocoder *geocoder;
 @property (copy, nonatomic) void (^completionHandler)(CLLocationCoordinate2D coordinate);
-
-@property (strong, nonatomic) CLLocationManager *locationManager;
-@property (assign, nonatomic) BOOL isUsingRealLocation;
-@property (assign, nonatomic) BOOL isFollowingUserLocation;
-@property (strong, nonatomic) UIButton *locateMeButton;
 @end
 
 @implementation LocationMapViewController
@@ -202,34 +197,25 @@ static NSString * const kLongitudeKey = @"longitude";
     self.title = @"选择位置";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     
+    // 在地图界面中临时禁用虚拟定位
     [[WeChatLocationManager sharedManager] enableTemporaryDisable];
     
     [self setupNavigationBar];
     [self setupUI];
     [self setupMap];
-    [self setupLocationButton];
     
     self.geocoder = [[CLGeocoder alloc] init];
-    self.locationManager = [[CLLocationManager alloc] init];
-    self.locationManager.delegate = self;
-    self.isUsingRealLocation = NO;
-    self.isFollowingUserLocation = NO;
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     
+    // 离开地图界面时恢复虚拟定位设置
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
-    
-    if (self.isUsingRealLocation) {
-        [self.locationManager stopUpdatingLocation];
-        self.isUsingRealLocation = NO;
-        self.mapView.showsUserLocation = NO;
-        self.isFollowingUserLocation = NO;
-    }
 }
 
 - (void)dealloc {
+    // 确保恢复虚拟定位
     [[WeChatLocationManager sharedManager] disableTemporaryDisable];
 }
 
@@ -317,6 +303,7 @@ static NSString * const kLongitudeKey = @"longitude";
     self.mapView = [[MKMapView alloc] init];
     self.mapView.delegate = self;
     
+    // 关键：不显示用户位置，不自动定位
     self.mapView.showsUserLocation = NO;
     self.mapView.showsCompass = YES;
     self.mapView.showsScale = YES;
@@ -337,6 +324,7 @@ static NSString * const kLongitudeKey = @"longitude";
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMapLongPress:)];
     [self.mapView addGestureRecognizer:longPress];
     
+    // 使用虚拟位置作为初始位置
     CLLocationCoordinate2D initialCoord = CLLocationCoordinate2DMake([WeChatLocationManager sharedManager].latitude, 
                                                                      [WeChatLocationManager sharedManager].longitude);
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(initialCoord, 1000, 1000);
@@ -348,61 +336,8 @@ static NSString * const kLongitudeKey = @"longitude";
     [self.mapView addAnnotation:existingAnnotation];
 }
 
-- (void)setupLocationButton {
-    self.locateMeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.locateMeButton.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    self.locateMeButton.backgroundColor = [UIColor systemBackgroundColor];
-    self.locateMeButton.tintColor = [UIColor systemBlueColor];
-    self.locateMeButton.layer.cornerRadius = 20;
-    self.locateMeButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.locateMeButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self.locateMeButton.layer.shadowRadius = 3;
-    self.locateMeButton.layer.shadowOpacity = 0.2;
-    self.locateMeButton.layer.masksToBounds = NO;
-    
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
-    UIImage *locationIcon = [UIImage systemImageNamed:@"location.fill" withConfiguration:config];
-    [self.locateMeButton setImage:locationIcon forState:UIControlStateNormal];
-    
-    [self.locateMeButton addTarget:self action:@selector(centerToCurrentLocation) forControlEvents:UIControlEventTouchUpInside];
-    
-    [self.mapView addSubview:self.locateMeButton];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-16],
-        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-16],
-        [self.locateMeButton.widthAnchor constraintEqualToConstant:40],
-        [self.locateMeButton.heightAnchor constraintEqualToConstant:40]
-    ]];
-}
-
 - (void)closeMapSelection {
     [self.navigationController dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)centerToCurrentLocation {
-    CLAuthorizationStatus status = [self.locationManager authorizationStatus];
-    
-    if (status == kCLAuthorizationStatusNotDetermined) {
-        [self.locationManager requestWhenInUseAuthorization];
-    } else if (status == kCLAuthorizationStatusAuthorizedWhenInUse ||
-               status == kCLAuthorizationStatusAuthorizedAlways) {
-        [self.locationManager startUpdatingLocation];
-        self.isUsingRealLocation = YES;
-        self.mapView.showsUserLocation = YES;
-        self.isFollowingUserLocation = YES;
-        
-        self.locateMeButton.enabled = NO;
-        self.locateMeButton.alpha = 0.7;
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            self.locateMeButton.enabled = YES;
-            self.locateMeButton.alpha = 1.0;
-        });
-    } else {
-        [self showAlertWithTitle:@"定位权限" message:@"请前往设置-隐私-定位服务中开启微信的定位权限" showSettingsButton:YES];
-    }
 }
 
 - (void)handleMapLongPress:(UILongPressGestureRecognizer *)gesture {
@@ -443,8 +378,6 @@ static NSString * const kLongitudeKey = @"longitude";
         MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(coordinate, 500, 500);
         [self.mapView setRegion:region animated:YES];
         [self.mapView selectAnnotation:annotation animated:YES];
-        
-        self.isFollowingUserLocation = NO;
     }
 }
 
@@ -606,55 +539,6 @@ static NSString * const kLongitudeKey = @"longitude";
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(coordinate, 1000, 1000);
     [self.mapView setRegion:region animated:YES];
     [self.mapView selectAnnotation:annotation animated:YES];
-}
-
-#pragma mark - CLLocationManagerDelegate
-- (void)locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
-    if (locations.count > 0 && self.isUsingRealLocation) {
-        CLLocation *currentLocation = locations.firstObject;
-        
-        [manager stopUpdatingLocation];
-        self.isUsingRealLocation = NO;
-        
-        if (self.isFollowingUserLocation) {
-            MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 1500, 1500);
-            [self.mapView setRegion:region animated:YES];
-        }
-        
-        self.locateMeButton.enabled = YES;
-        self.locateMeButton.alpha = 1.0;
-    }
-}
-
-- (void)locationManager:(CLLocationManager *)manager didChangeAuthorizationStatus:(CLAuthorizationStatus)status {
-    if (status == kCLAuthorizationStatusAuthorizedWhenInUse || status == kCLAuthorizationStatusAuthorizedAlways) {
-        [manager startUpdatingLocation];
-        self.isUsingRealLocation = YES;
-        self.mapView.showsUserLocation = YES;
-        self.isFollowingUserLocation = YES;
-    } else if (status == kCLAuthorizationStatusDenied || status == kCLAuthorizationStatusRestricted) {
-        self.locateMeButton.enabled = YES;
-        self.locateMeButton.alpha = 1.0;
-    }
-}
-
-- (void)locationManager:(CLLocationManager *)manager didFailWithError:(NSError *)error {
-    if (error.code == kCLErrorDenied) {
-        [manager stopUpdatingLocation];
-        self.isUsingRealLocation = NO;
-        self.mapView.showsUserLocation = NO;
-        self.isFollowingUserLocation = NO;
-        
-        self.locateMeButton.enabled = YES;
-        self.locateMeButton.alpha = 1.0;
-    }
-}
-
-#pragma mark - MKMapViewDelegate
-- (void)mapView:(MKMapView *)mapView regionDidChangeAnimated:(BOOL)animated {
-    if (self.isFollowingUserLocation && animated) {
-        self.isFollowingUserLocation = NO;
-    }
 }
 
 @end
