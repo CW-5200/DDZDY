@@ -5,7 +5,7 @@
 #import <MapKit/MapKit.h>
 
 #define PLUGIN_NAME @"DD虚拟定位"
-#define PLUGIN_VERSION @"1.0.3"
+#define PLUGIN_VERSION @"1.0.4"
 
 // MARK: - 设置键名
 static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled";
@@ -362,22 +362,24 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (void)setupLocationButton {
-    // 创建圆形定位按钮（类似苹果地图样式）
+    // 创建圆形定位按钮（更小的尺寸，类似苹果地图样式）
     self.locateMeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.locateMeButton.translatesAutoresizingMaskIntoConstraints = NO;
     
     // 设置按钮样式
     self.locateMeButton.backgroundColor = [UIColor systemBackgroundColor];
     self.locateMeButton.tintColor = [UIColor systemBlueColor];
-    self.locateMeButton.layer.cornerRadius = 25; // 圆形按钮，直径50
+    self.locateMeButton.layer.cornerRadius = 20; // 圆形按钮，直径40（更小）
     self.locateMeButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.locateMeButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self.locateMeButton.layer.shadowRadius = 4;
-    self.locateMeButton.layer.shadowOpacity = 0.3;
+    self.locateMeButton.layer.shadowOffset = CGSizeMake(0, 1);
+    self.locateMeButton.layer.shadowRadius = 3;
+    self.locateMeButton.layer.shadowOpacity = 0.2;
     self.locateMeButton.layer.masksToBounds = NO;
+    self.locateMeButton.layer.borderWidth = 0.5;
+    self.locateMeButton.layer.borderColor = [UIColor systemGray3Color].CGColor;
     
-    // 设置图标
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
+    // 设置图标（更小尺寸）
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
     UIImage *locationIcon = [UIImage systemImageNamed:@"location.fill" withConfiguration:config];
     [self.locateMeButton setImage:locationIcon forState:UIControlStateNormal];
     
@@ -389,10 +391,10 @@ static NSString * const kLongitudeKey = @"longitude";
     
     // 设置约束（右下角）
     [NSLayoutConstraint activateConstraints:@[
-        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-16],
-        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-16],
-        [self.locateMeButton.widthAnchor constraintEqualToConstant:50],
-        [self.locateMeButton.heightAnchor constraintEqualToConstant:50]
+        [self.locateMeButton.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-12],
+        [self.locateMeButton.bottomAnchor constraintEqualToAnchor:self.mapView.bottomAnchor constant:-12],
+        [self.locateMeButton.widthAnchor constraintEqualToConstant:40],
+        [self.locateMeButton.heightAnchor constraintEqualToConstant:40]
     ]];
 }
 
@@ -432,6 +434,11 @@ static NSString * const kLongitudeKey = @"longitude";
     if (gesture.state == UIGestureRecognizerStateBegan) {
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         [feedback impactOccurred];
+        
+        // 隐藏用户位置蓝点（如果有的话）
+        if (self.mapView.showsUserLocation) {
+            self.mapView.showsUserLocation = NO;
+        }
         
         NSMutableArray *annotationsToRemove = [NSMutableArray array];
         for (id<MKAnnotation> annotation in self.mapView.annotations) {
@@ -515,7 +522,7 @@ static NSString * const kLongitudeKey = @"longitude";
                                                 NULL,
                                                 NULL,
                                                 YES);
-        }];
+        });
     } else {
         [self showAlertWithTitle:@"提示" message:@"请先在地图上选择一个位置" showSettingsButton:NO];
     }
@@ -540,7 +547,10 @@ static NSString * const kLongitudeKey = @"longitude";
 }
 
 - (MKAnnotationView *)mapView:(MKMapView *)mapView viewForAnnotation:(id<MKAnnotation>)annotation {
-    if ([annotation isKindOfClass:[MKUserLocation class]]) return nil;
+    // 系统用户位置返回nil，让系统处理蓝点显示
+    if ([annotation isKindOfClass:[MKUserLocation class]]) {
+        return nil;
+    }
     
     static NSString *annotationId = @"customAnnotation";
     MKMarkerAnnotationView *markerView = (MKMarkerAnnotationView *)[mapView dequeueReusableAnnotationViewWithIdentifier:annotationId];
@@ -577,6 +587,11 @@ static NSString * const kLongitudeKey = @"longitude";
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
     [searchBar resignFirstResponder];
+    
+    // 隐藏用户位置蓝点（如果有的话）
+    if (self.mapView.showsUserLocation) {
+        self.mapView.showsUserLocation = NO;
+    }
     
     NSString *searchText = searchBar.text;
     if (searchText.length == 0) return;
@@ -643,24 +658,8 @@ static NSString * const kLongitudeKey = @"longitude";
         MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(currentLocation.coordinate, 500, 500);
         [self.mapView setRegion:region animated:YES];
         
-        // 添加标注
-        MKPointAnnotation *annotation = [[MKPointAnnotation alloc] init];
-        annotation.coordinate = currentLocation.coordinate;
-        annotation.title = @"真实位置";
-        annotation.subtitle = @"您的当前位置";
-        
-        // 移除其他选择的位置
-        NSMutableArray *annotationsToRemove = [NSMutableArray array];
-        for (id<MKAnnotation> existingAnnotation in self.mapView.annotations) {
-            if ([existingAnnotation.title isEqualToString:@"选择的位置"] || 
-                [existingAnnotation.title isEqualToString:@"真实位置"]) {
-                [annotationsToRemove addObject:existingAnnotation];
-            }
-        }
-        [self.mapView removeAnnotations:annotationsToRemove];
-        
-        [self.mapView addAnnotation:annotation];
-        [self.mapView selectAnnotation:annotation animated:YES];
+        // 只显示系统蓝点，不添加额外标注
+        self.mapView.showsUserLocation = YES;
         
         // 更新搜索框
         self.searchBar.text = [NSString stringWithFormat:@"%.6f, %.6f", 
