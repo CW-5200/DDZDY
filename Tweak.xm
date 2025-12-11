@@ -12,6 +12,13 @@ static NSString * const kLocationSpoofingEnabledKey = @"LocationSpoofingEnabled"
 static NSString * const kLatitudeKey = @"latitude";
 static NSString * const kLongitudeKey = @"longitude";
 
+// MARK: - 插件管理器接口声明
+@interface WCPluginsMgr : NSObject
++ (instancetype)sharedInstance;
+- (void)registerControllerWithTitle:(NSString *)title version:(NSString *)version controller:(NSString *)controller;
+- (void)registerSwitchWithTitle:(NSString *)title key:(NSString *)key;
+@end
+
 // MARK: - 全局位置管理器
 @interface WeChatLocationManager : NSObject
 + (instancetype)sharedManager;
@@ -19,11 +26,9 @@ static NSString * const kLongitudeKey = @"longitude";
 @property (nonatomic, assign) double latitude;
 @property (nonatomic, assign) double longitude;
 
-// 定时器管理
 @property (nonatomic, strong) dispatch_source_t locationUpdateTimer;
 @property (nonatomic, assign) BOOL isTimerActive;
 
-// 临时禁用功能
 @property (nonatomic, assign) BOOL temporarilyDisabled;
 @property (nonatomic, assign) BOOL originalEnabledState;
 
@@ -33,7 +38,6 @@ static NSString * const kLongitudeKey = @"longitude";
 - (void)startFakeLocationUpdatesForManager:(CLLocationManager *)manager;
 - (void)stopFakeLocationUpdates;
 
-// 临时禁用/恢复方法
 - (void)enableTemporaryDisable;
 - (void)disableTemporaryDisable;
 - (BOOL)isVirtualLocationEnabled;
@@ -104,7 +108,6 @@ static NSString * const kLongitudeKey = @"longitude";
     return fakeLocation;
 }
 
-// MARK: - 定时器管理
 - (void)startFakeLocationUpdatesForManager:(CLLocationManager *)manager {
     if (![self isVirtualLocationEnabled] || _isTimerActive) {
         return;
@@ -157,7 +160,6 @@ static NSString * const kLongitudeKey = @"longitude";
     }
 }
 
-// MARK: - 临时禁用功能实现
 - (void)enableTemporaryDisable {
     if (!self.temporarilyDisabled) {
         self.originalEnabledState = self.isEnabled;
@@ -893,11 +895,12 @@ static void loadLocationSettingsCallback(CFNotificationCenterRef center, void *o
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         
-        Class pluginsMgrClass = NSClassFromString(@"WCPluginsMgr");
-        if (pluginsMgrClass && [pluginsMgrClass respondsToSelector:@selector(sharedInstance)]) {
-            [[objc_getClass("WCPluginsMgr") sharedInstance] registerControllerWithTitle:PLUGIN_NAME 
-                                                                               version:PLUGIN_VERSION 
-                                                                           controller:@"DDVirtualLocationSettingsViewController"];
+        // 注册插件到微信插件管理器
+        if (NSClassFromString(@"WCPluginsMgr")) {
+            [[objc_getClass("WCPluginsMgr") sharedInstance] 
+                registerControllerWithTitle:PLUGIN_NAME 
+                                   version:PLUGIN_VERSION 
+                               controller:@"DDVirtualLocationSettingsViewController"];
         }
     }
 }
